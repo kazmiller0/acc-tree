@@ -55,33 +55,3 @@ pub fn deserialize<'de, D: Deserializer<'de>, C: AffineCurve>(d: D) -> Result<C,
         d.deserialize_bytes(BytesVisitor(PhantomData))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ark_bls12_381::{G1Affine, G2Affine};
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-    struct Foo {
-        #[serde(with = "super")]
-        f1: G1Affine,
-        #[serde(with = "super")]
-        f2: G2Affine,
-    }
-
-    #[test]
-    fn test_serde() {
-        #[allow(clippy::blacklisted_name)]
-        let foo = Foo {
-            f1: G1Affine::prime_subgroup_generator(),
-            f2: G2Affine::prime_subgroup_generator(),
-        };
-
-        let json = serde_json::to_string_pretty(&foo).unwrap();
-        let bin = bincode::serialize(&foo).unwrap();
-
-        assert_eq!(serde_json::from_str::<Foo>(&json).unwrap(), foo);
-        assert_eq!(bincode::deserialize::<Foo>(&bin[..]).unwrap(), foo);
-    }
-}

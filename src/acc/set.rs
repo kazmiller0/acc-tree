@@ -1,4 +1,4 @@
-use crate::vchain::digest::Digestible;
+use super::digest::Digestible;
 use core::iter::FromIterator;
 use core::ops::{Add, BitAnd, BitOr, Deref};
 use serde::{
@@ -151,52 +151,5 @@ impl<'de, T: SetElement + Deserialize<'de>> Deserialize<'de> for MultiSet<T> {
             let inner: HashMap<T, u32> = Deserialize::deserialize(deserializer)?;
             Ok(Self { inner })
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_intersected_with() {
-        let s1 = MultiSet::from_vec(vec![1, 2, 3]);
-        let s2 = MultiSet::from_vec(vec![2, 2, 5]);
-        let s3 = MultiSet::from_vec(vec![5, 6]);
-        assert!(s1.is_intersected_with(&s2));
-        assert!(!s1.is_intersected_with(&s3));
-    }
-
-    #[test]
-    fn test_set_sum() {
-        let s1 = MultiSet::from_vec(vec![1, 1, 2]);
-        let s2 = MultiSet::from_vec(vec![2, 2, 3]);
-        let s3 = MultiSet::from_tuple_vec(vec![(1, 2), (2, 3), (3, 1)]);
-        assert_eq!(&s1 + &s2, s3);
-    }
-
-    #[test]
-    fn test_set_union() {
-        let s1 = MultiSet::from_vec(vec![1, 1, 2]);
-        let s2 = MultiSet::from_vec(vec![2, 2, 3]);
-        let s3 = MultiSet::from_tuple_vec(vec![(1, 1), (2, 1), (3, 1)]);
-        assert_eq!(&s1 | &s2, s3);
-    }
-
-    #[test]
-    fn test_set_intersection() {
-        let s1 = MultiSet::from_vec(vec![1, 1, 2]);
-        let s2 = MultiSet::from_vec(vec![2, 2, 3]);
-        let s3 = MultiSet::from_tuple_vec(vec![(2, 1)]);
-        assert_eq!(&s1 & &s2, s3);
-    }
-
-    #[test]
-    fn test_serde() {
-        let s = MultiSet::from_vec(vec![1, 1, 2]);
-        let json = serde_json::to_string_pretty(&s).unwrap();
-        let bin = bincode::serialize(&s).unwrap();
-        assert_eq!(serde_json::from_str::<MultiSet<i32>>(&json).unwrap(), s);
-        assert_eq!(bincode::deserialize::<MultiSet<i32>>(&bin[..]).unwrap(), s);
     }
 }

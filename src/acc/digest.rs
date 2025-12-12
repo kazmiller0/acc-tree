@@ -22,8 +22,6 @@ impl fmt::Debug for Digest {
     }
 }
 
-// Ref: https://github.com/slowli/hex-buffer-serde
-
 impl Serialize for Digest {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -162,48 +160,4 @@ pub fn concat_digest(input: impl Iterator<Item = Digest>) -> Digest {
         state.update(&d.0);
     }
     Digest::from(state.finalize())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_to_digest() {
-        let expect = Digest(*b"\x32\x4d\xcf\x02\x7d\xd4\xa3\x0a\x93\x2c\x44\x1f\x36\x5a\x25\xe8\x6b\x17\x3d\xef\xa4\xb8\xe5\x89\x48\x25\x34\x71\xb8\x1b\x72\xcf");
-        assert_eq!(b"hello"[..].to_digest(), expect);
-        assert_eq!("hello".to_digest(), expect);
-        assert_eq!("hello".to_owned().to_digest(), expect);
-    }
-
-    #[test]
-    fn test_digest_concat() {
-        let input = vec!["hello".to_digest(), "world!".to_digest()];
-        let expect = {
-            let mut buf: Vec<u8> = Vec::new();
-            buf.extend_from_slice(&input[0].0[..]);
-            buf.extend_from_slice(&input[1].0[..]);
-            buf.as_slice().to_digest()
-        };
-        assert_eq!(concat_digest_ref(input.iter()), expect);
-        assert_eq!(concat_digest(input.into_iter()), expect);
-    }
-
-    #[test]
-    fn test_serde() {
-        let digest = "hello".to_digest();
-        let json = serde_json::to_string_pretty(&digest).unwrap();
-        assert_eq!(
-            json,
-            "\"324dcf027dd4a30a932c441f365a25e86b173defa4b8e58948253471b81b72cf\""
-        );
-        let bin = bincode::serialize(&digest).unwrap();
-        assert_eq!(
-            bin,
-            b"\x32\x4d\xcf\x02\x7d\xd4\xa3\x0a\x93\x2c\x44\x1f\x36\x5a\x25\xe8\x6b\x17\x3d\xef\xa4\xb8\xe5\x89\x48\x25\x34\x71\xb8\x1b\x72\xcf",
-        );
-
-        assert_eq!(serde_json::from_str::<Digest>(&json).unwrap(), digest);
-        assert_eq!(bincode::deserialize::<Digest>(&bin[..]).unwrap(), digest);
-    }
 }

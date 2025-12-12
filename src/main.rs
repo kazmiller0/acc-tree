@@ -3,8 +3,9 @@ extern crate lazy_static;
 #[macro_use]
 extern crate log;
 
-pub mod vchain;
-use vchain::{Acc1, Accumulator, G1Affine, MultiSet};
+mod acc;
+
+use acc::{Acc, Accumulator, G1Affine, MultiSet};
 
 #[derive(Debug, Clone)]
 enum Node {
@@ -83,7 +84,7 @@ impl AccumulatorTree {
     fn insert(&mut self, key: String, fid: String) {
         let leaf_hash = calculate_hash(&key, &fid);
         let keys = MultiSet::from_vec(vec![key.clone()]);
-        let leaf_acc = Acc1::cal_acc_g1(&keys);
+        let leaf_acc = Acc::cal_acc_g1(&keys);
 
         let curr = Box::new(Node::Leaf {
             hash: leaf_hash,
@@ -131,6 +132,72 @@ impl AccumulatorTree {
         } else {
             println!("Key {} not found for delete", key);
         }
+    }
+
+    fn global_multiset(&self) -> MultiSet<String> {
+        let mut vec = Vec::new();
+        for root in &self.roots {
+            for (k, _) in root.collect_leaves(None) {
+                vec.push(k);
+            }
+        }
+        MultiSet::from_vec(vec)
+    }
+
+    fn global_acc(&self) -> G1Affine {
+        Acc::cal_acc_g1(&self.global_multiset())
+    }
+
+    fn insert_with_proof(&mut self, key: String, fid: String) -> (G1Affine, G1Affine, G1Affine) {
+        let old_acc = self.global_acc();
+        // expected new accumulator computed via dynamic op
+        let (new_from_dyn, proof) = Acc::add_element(&old_acc, &key);
+        // apply insert into tree
+        self.insert(key.clone(), fid);
+        let new_acc = self.global_acc();
+        assert_eq!(new_from_dyn, new_acc);
+        (old_acc, new_acc, proof)
+    }
+
+    fn delete_with_proof(&mut self, key: &str) -> Option<(G1Affine, G1Affine, G1Affine)> {
+        let old_acc = self.global_acc();
+        // perform delete
+        if !self.roots.iter().any(|r| r.has_key(key)) {
+            return None;
+        }
+        self.delete(key);
+        let new_acc = self.global_acc();
+        let (new_from_dyn, proof) = Acc::remove_element(&old_acc, &key.to_string());
+        assert_eq!(new_from_dyn, new_acc);
+        Some((old_acc, new_acc, proof))
+    }
+
+    fn rename_with_proof(
+        &mut self,
+        old_key: &str,
+        new_key: String,
+        new_fid: String,
+    ) -> Option<(G1Affine, G1Affine, G1Affine)> {
+        if !self.roots.iter().any(|r| r.has_key(old_key)) {
+            return None;
+        }
+        let old_acc = self.global_acc();
+        // dynamic update (old -> new)
+        let (new_from_dyn, proof) = Acc::update_element(&old_acc, &old_key.to_string(), &new_key);
+        // apply rename: remove old and insert new
+        self.delete(old_key);
+        self.insert(new_key.clone(), new_fid);
+        let new_acc = self.global_acc();
+        assert_eq!(new_from_dyn, new_acc);
+        Some((old_acc, new_acc, proof))
+    }
+
+    fn membership_witness(&self, key: &str) -> Option<G1Affine> {
+        if !self.roots.iter().any(|r| r.has_key(key)) {
+            return None;
+        }
+        let acc = self.global_acc();
+        Some(Acc::create_witness(&acc, &key.to_string()))
     }
 }
 
@@ -196,7 +263,7 @@ fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
     };
 
     let merged_keys = &left_keys + &right_keys;
-    let acc = Acc1::cal_acc_g1(&merged_keys);
+    let acc = Acc::cal_acc_g1(&merged_keys);
 
     Box::new(Node::NonLeaf {
         hash: combined_hash,
@@ -241,6 +308,40 @@ fn main() {
     println!("\n--- Delete Key2 ---");
     tree.delete("Key2");
     print_tree(&tree);
+
+    // Demonstrate CRUD with proofs
+    println!("\n--- Insert Key6 with proof ---");
+    let (old_acc, new_acc, proof) = tree.insert_with_proof("Key6".to_string(), "Fid6".to_string());
+    println!(
+        "Old acc: {:?}\nNew acc: {:?}\nProof (witness): {:?}",
+        old_acc, new_acc, proof
+    );
+
+    println!("\n--- Membership witness for Key3 ---");
+    if let Some(wit) = tree.membership_witness("Key3") {
+        let acc = tree.global_acc();
+        println!(
+            "Witness: {:?}, verify: {}",
+            wit,
+            Acc::verify_membership(&acc, &wit, &"Key3".to_string())
+        );
+    }
+
+    println!("\n--- Rename Key3 -> Key3_new with proof ---");
+    if let Some((old_acc, new_acc, proof)) =
+        tree.rename_with_proof("Key3", "Key3_new".to_string(), "Fid3_new".to_string())
+    {
+        println!(
+            "Rename proof verify via Acc::verify_update: {}",
+            Acc::verify_update(
+                &old_acc,
+                &new_acc,
+                &proof,
+                &"Key3".to_string(),
+                &"Key3_new".to_string()
+            )
+        );
+    }
 }
 
 fn print_tree(tree: &AccumulatorTree) {

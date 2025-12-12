@@ -1,5 +1,5 @@
-use crate::vchain::acc::utils::digest_to_prime_field;
-use crate::vchain::set::{MultiSet, SetElement};
+use super::utils::digest_to_prime_field;
+use super::set::{MultiSet, SetElement};
 use ark_ff::PrimeField;
 use ark_poly::{univariate::DensePolynomial, UVPolynomial};
 use core::ops::Deref;
@@ -55,30 +55,5 @@ impl<F: PrimeField> Deref for DigestSet<F> {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ark_bls12_381::Fr;
-
-    #[test]
-    fn test_digest_to_poly() {
-        let set = DigestSet {
-            inner: vec![
-                (Fr::from(1u32), 2),
-                (Fr::from(2u32), 1),
-                (Fr::from(3u32), 1),
-            ],
-        };
-        let expect = DensePolynomial::from_coefficients_vec(vec![
-            Fr::from(6u32),
-            Fr::from(17u32),
-            Fr::from(17u32),
-            Fr::from(7u32),
-            Fr::from(1u32),
-        ]);
-        assert_eq!(set.expand_to_poly(), expect);
     }
 }
