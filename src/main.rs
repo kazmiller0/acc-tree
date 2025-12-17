@@ -10,10 +10,8 @@ use acc::{Acc, Accumulator, G1Affine, MultiSet};
 #[derive(Debug, Clone)]
 enum Node {
     Leaf {
-        hash: String,
         key: String,
         fid: String,
-        acc: G1Affine,
         level: usize,
     },
     NonLeaf {
@@ -21,7 +19,8 @@ enum Node {
         keys: MultiSet<String>,
         acc: G1Affine,
         level: usize,
-        children: Vec<Box<Node>>,
+        left: Box<Node>,
+        right: Box<Node>,
     },
 }
 
@@ -33,17 +32,20 @@ impl Node {
         }
     }
 
-    fn hash(&self) -> &String {
+    fn hash(&self) -> String {
         match self {
-            Node::Leaf { hash, .. } => hash,
-            Node::NonLeaf { hash, .. } => hash,
+            Node::Leaf { key, fid, .. } => calculate_hash(key, fid),
+            Node::NonLeaf { hash, .. } => hash.clone(),
         }
     }
 
-    fn acc(&self) -> &G1Affine {
+    fn acc(&self) -> G1Affine {
         match self {
-            Node::Leaf { acc, .. } => acc,
-            Node::NonLeaf { acc, .. } => acc,
+            Node::Leaf { key, .. } => {
+                let keys = MultiSet::from_vec(vec![key.clone()]);
+                Acc::cal_acc_g1(&keys)
+            }
+            Node::NonLeaf { acc, .. } => acc.clone(),
         }
     }
 
@@ -62,10 +64,9 @@ impl Node {
                     leaves.push((key.clone(), fid.clone()));
                 }
             }
-            Node::NonLeaf { children, .. } => {
-                for child in children {
-                    leaves.extend(child.collect_leaves(exclude_key));
-                }
+            Node::NonLeaf { left, right, .. } => {
+                leaves.extend(left.collect_leaves(exclude_key));
+                leaves.extend(right.collect_leaves(exclude_key));
             }
         }
         leaves
@@ -82,15 +83,9 @@ impl AccumulatorTree {
     }
 
     fn insert(&mut self, key: String, fid: String) {
-        let leaf_hash = calculate_hash(&key, &fid);
-        let keys = MultiSet::from_vec(vec![key.clone()]);
-        let leaf_acc = Acc::cal_acc_g1(&keys);
-
         let curr = Box::new(Node::Leaf {
-            hash: leaf_hash,
             key: key,
             fid: fid,
-            acc: leaf_acc,
             level: 0,
         });
 
@@ -204,14 +199,12 @@ impl AccumulatorTree {
 fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bool {
     match **node {
         Node::Leaf {
-            ref mut hash,
             ref mut fid,
             ref key,
             ..
         } => {
             if key == target_key {
                 *fid = new_fid.to_string();
-                *hash = calculate_hash(key, new_fid);
                 return true;
             }
             false
@@ -219,7 +212,8 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
         Node::NonLeaf {
             ref mut hash,
             ref keys,
-            ref mut children,
+            ref mut left,
+            ref mut right,
             ..
         } => {
             if !keys.contains_key(target_key) {
@@ -227,22 +221,18 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
             }
 
             let mut changed = false;
-            for child in children.iter_mut() {
-                if update_recursive(child, target_key, new_fid) {
-                    changed = true;
-                }
+            if update_recursive(left, target_key, new_fid) {
+                changed = true;
+            }
+            if update_recursive(right, target_key, new_fid) {
+                changed = true;
             }
 
             if changed {
-                // Recompute hash from children
-                // Assuming children are always [left, right] for binary merge
-                // But merge function puts them in vec.
-                // We need to know the order. merge(r_old, curr) -> children: [r_old, curr]
-                // So children[0] is left, children[1] is right.
-                if children.len() == 2 {
-                    *hash = format!("hash({}||{})", children[0].hash(), children[1].hash());
-                }
+                // Recompute hash from left and right child hashes
+                *hash = format!("{}||{}", left.hash(), right.hash());
             }
+
             changed
         }
     }
@@ -250,7 +240,7 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
 
 fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
     let new_level = curr.level() + 1;
-    let combined_hash = format!("hash({}||{})", r_old.hash(), curr.hash());
+    let combined_hash = format!("{}||{}", r_old.hash(), curr.hash());
 
     let left_keys = match &*r_old {
         Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
@@ -265,12 +255,23 @@ fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
     let merged_keys = &left_keys + &right_keys;
     let acc = Acc::cal_acc_g1(&merged_keys);
 
+    // build left/right child leaves (for NonLeaf we keep children directly)
+    let left_child = match r_old {
+        r @ Box::new(Node::Leaf { .. }) => r,
+        r @ Box::new(Node::NonLeaf { .. }) => r,
+    };
+    let right_child = match curr {
+        c @ Box::new(Node::Leaf { .. }) => c,
+        c @ Box::new(Node::NonLeaf { .. }) => c,
+    };
+
     Box::new(Node::NonLeaf {
         hash: combined_hash,
         keys: merged_keys,
         acc,
         level: new_level,
-        children: vec![r_old, curr],
+        left: left_child,
+        right: right_child,
     })
 }
 
