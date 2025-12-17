@@ -1,6 +1,9 @@
 use acc::{Acc, Accumulator, G1Affine, MultiSet};
 use ark_ec::{AffineCurve, ProjectiveCurve};
+use std::collections::HashMap;
 use sha2::{Digest, Sha256};
+use std::env;
+use std::time::Instant;
 
 type Hash = [u8; 32];
 
@@ -76,21 +79,24 @@ impl Node {
 
 struct AccumulatorTree {
     roots: Vec<Box<Node>>,
+    index: HashMap<String, usize>, // map key -> root index in `roots`
 }
 
 impl AccumulatorTree {
     fn new() -> Self {
-        AccumulatorTree { roots: Vec::new() }
+        AccumulatorTree { roots: Vec::new(), index: HashMap::new() }
     }
 
     fn insert(&mut self, key: String, fid: String) {
-        let curr = Box::new(Node::Leaf {
-            key: key,
-            fid: fid,
-            level: 0,
-        });
+        // keep a copy of `key` for index maintenance
+        let key_copy = key.clone();
+        let curr = Box::new(Node::Leaf { key: key, fid: fid, level: 0 });
 
         self.merge_root(curr);
+        // incrementally update index for the single inserted key
+        if let Some(idx) = self.roots.iter().position(|r| r.has_key(&key_copy)) {
+            self.index.insert(key_copy, idx);
+        }
     }
 
     fn merge_root(&mut self, mut node: Box<Node>) {
@@ -106,28 +112,62 @@ impl AccumulatorTree {
         self.roots.sort_by_key(|n| n.level());
     }
 
+    fn rebuild_index(&mut self) {
+        self.index.clear();
+        for (i, root) in self.roots.iter().enumerate() {
+            for (k, _f) in root.collect_leaves(None) {
+                self.index.insert(k, i);
+            }
+        }
+    }
+
     fn update(&mut self, key: &str, new_fid: String) {
-        for root in &mut self.roots {
-            if root.has_key(key) {
-                update_recursive(root, key, &new_fid);
-                // Since we only update fid, the level structure doesn't change,
-                // so we don't need to re-merge roots.
+        if let Some(&idx) = self.index.get(key) {
+            if idx < self.roots.len() {
+                update_recursive(&mut self.roots[idx], key, &new_fid);
+                // accs updated incrementally; index remains valid
                 return;
             }
         }
+
+        // fallback: index may be stale/missing -> locate root by scanning (only for this key)
+        if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
+            // insert mapping for future fast lookup
+            self.index.insert(key.to_string(), idx);
+            update_recursive(&mut self.roots[idx], key, &new_fid);
+            return;
+        }
+
         println!("Key {} not found for update", key);
     }
 
     fn delete(&mut self, key: &str) {
+        // Prefer index lookup
+        if let Some(&idx) = self.index.get(key) {
+            if idx < self.roots.len() {
+                let root = self.roots.remove(idx);
+                if let Some(new_root) = delete_recursive(root, key) {
+                    self.roots.push(new_root);
+                    self.roots.sort_by_key(|n| n.level());
+                }
+                // remove only the deleted key from index (incremental)
+                self.index.remove(key);
+                return;
+            }
+        }
+
+        // fallback: index may be missing/stale -> find root by scanning (only for this key)
         if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
             let root = self.roots.remove(idx);
             if let Some(new_root) = delete_recursive(root, key) {
                 self.roots.push(new_root);
                 self.roots.sort_by_key(|n| n.level());
             }
-        } else {
-            println!("Key {} not found for delete", key);
+            self.index.remove(key);
+            return;
         }
+
+        println!("Key {} not found for delete", key);
     }
 }
 
@@ -320,6 +360,14 @@ fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 && args[1] == "bench" {
+        // optional second arg: number of keys
+        let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20000);
+        run_benchmark(n);
+        return;
+    }
+
     let mut tree = AccumulatorTree::new();
 
     println!("--- Insert 1 ---");
@@ -349,6 +397,36 @@ fn main() {
     println!("\n--- Delete Key2 ---");
     tree.delete("Key2");
     print_tree(&tree);
+}
+
+fn run_benchmark(n: usize) {
+    println!("Running benchmark with {} keys", n);
+    let mut tree = AccumulatorTree::new();
+
+    // Insert
+    let t0 = Instant::now();
+    for i in 0..n {
+        tree.insert(format!("Key{}", i), format!("Fid{}", i));
+    }
+    let dur_ins = t0.elapsed();
+
+    // Update every 10th key
+    let t1 = Instant::now();
+    for i in (0..n).step_by(10) {
+        tree.update(&format!("Key{}", i), format!("Fid{}_u", i));
+    }
+    let dur_upd = t1.elapsed();
+
+    // Delete every 5th key
+    let t2 = Instant::now();
+    for i in (0..n).step_by(5) {
+        tree.delete(&format!("Key{}", i));
+    }
+    let dur_del = t2.elapsed();
+
+    println!("Insert: total {:?}, per-op {:?}", dur_ins, dur_ins / (n as u32));
+    println!("Update: total {:?}, per-op {:?}", dur_upd, dur_upd / ((n/10) as u32));
+    println!("Delete: total {:?}, per-op {:?}", dur_del, dur_del / ((n/5) as u32));
 }
 
 fn print_tree(tree: &AccumulatorTree) {
