@@ -1,8 +1,9 @@
 use acc::{Acc, Accumulator, G1Affine, MultiSet};
 use ark_ec::{AffineCurve, ProjectiveCurve};
-use std::collections::HashMap;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::env;
+use std::rc::Rc;
 use std::time::Instant;
 
 type Hash = [u8; 32];
@@ -16,7 +17,7 @@ enum Node {
     },
     NonLeaf {
         hash: Hash,
-        keys: MultiSet<String>,
+        keys: Rc<MultiSet<String>>,
         acc: G1Affine,
         level: usize,
         left: Box<Node>,
@@ -84,13 +85,20 @@ struct AccumulatorTree {
 
 impl AccumulatorTree {
     fn new() -> Self {
-        AccumulatorTree { roots: Vec::new(), index: HashMap::new() }
+        AccumulatorTree {
+            roots: Vec::new(),
+            index: HashMap::new(),
+        }
     }
 
     fn insert(&mut self, key: String, fid: String) {
         // keep a copy of `key` for index maintenance
         let key_copy = key.clone();
-        let curr = Box::new(Node::Leaf { key: key, fid: fid, level: 0 });
+        let curr = Box::new(Node::Leaf {
+            key: key,
+            fid: fid,
+            level: 0,
+        });
 
         self.merge_root(curr);
         // incrementally update index for the single inserted key
@@ -100,16 +108,39 @@ impl AccumulatorTree {
     }
 
     fn merge_root(&mut self, mut node: Box<Node>) {
+        // We'll capture merged node metadata before moving the node into `roots`.
+        let mut merged_hash: Option<Hash> = None;
+        let mut merged_level: Option<usize> = None;
+        let mut merged_keys: Option<MultiSet<String>> = None;
+
         loop {
             if let Some(idx) = self.roots.iter().position(|r| r.level() == node.level()) {
                 let other = self.roots.remove(idx);
                 node = merge(other, node);
             } else {
+                // capture metadata for index updates
+                merged_hash = Some(node.hash_bytes());
+                merged_level = Some(node.level());
+                merged_keys = Some(node_keys_from(&node));
                 self.roots.push(node);
                 break;
             }
         }
+
         self.roots.sort_by_key(|n| n.level());
+
+        // Update index mappings for keys in the merged node (incremental update).
+        if let (Some(h), Some(l), Some(keys)) = (merged_hash, merged_level, merged_keys) {
+            if let Some(pos) = self
+                .roots
+                .iter()
+                .position(|r| r.hash_bytes() == h && r.level() == l)
+            {
+                for (k, _v) in keys.iter() {
+                    self.index.insert(k.clone(), pos);
+                }
+            }
+        }
     }
 
     fn rebuild_index(&mut self) {
@@ -174,7 +205,7 @@ impl AccumulatorTree {
 fn node_keys_from(node: &Box<Node>) -> MultiSet<String> {
     match &**node {
         Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
-        Node::NonLeaf { keys, .. } => keys.clone(),
+        Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
     }
 }
 
@@ -204,13 +235,13 @@ fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
             };
             if !subtree_keys.contains_key(target_key) {
                 // reconstruct original node
-                let mut left_child = left;
-                let mut right_child = right;
+                let left_child = left;
+                let right_child = right;
                 let combined_hash = nonleaf_hash(left_child.hash_bytes(), right_child.hash_bytes());
                 let mut acc_proj = left_child.acc().into_projective();
                 acc_proj.add_assign_mixed(&right_child.acc());
                 let acc = acc_proj.into_affine();
-                let keys = subtree_keys;
+                let keys = Rc::new(subtree_keys);
                 return Some(Box::new(Node::NonLeaf {
                     hash: combined_hash,
                     keys,
@@ -232,11 +263,10 @@ fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
                     let mut acc_proj = l.acc().into_projective();
                     acc_proj.add_assign_mixed(&r.acc());
                     let acc = acc_proj.into_affine();
-                    let keys = {
-                        let lk = node_keys_from(&l);
-                        let rk = node_keys_from(&r);
-                        &lk + &rk
-                    };
+                    let lk = node_keys_from(&l);
+                    let rk = node_keys_from(&r);
+                    let merged = &lk + &rk;
+                    let keys = Rc::new(merged);
                     Some(Box::new(Node::NonLeaf {
                         hash: combined_hash,
                         keys,
@@ -311,17 +341,18 @@ fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
     let new_level = curr.level() + 1;
     let combined_hash = nonleaf_hash(r_old.hash_bytes(), curr.hash_bytes());
 
-    let left_keys = match &*r_old {
-        Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
+    let left_keys_rc: Rc<MultiSet<String>> = match &*r_old {
+        Node::Leaf { key, .. } => Rc::new(MultiSet::from_vec(vec![key.clone()])),
         Node::NonLeaf { keys, .. } => keys.clone(),
     };
 
-    let right_keys = match &*curr {
-        Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
+    let right_keys_rc: Rc<MultiSet<String>> = match &*curr {
+        Node::Leaf { key, .. } => Rc::new(MultiSet::from_vec(vec![key.clone()])),
         Node::NonLeaf { keys, .. } => keys.clone(),
     };
 
-    let merged_keys = &left_keys + &right_keys;
+    let merged_keys = &*left_keys_rc + &*right_keys_rc;
+    let merged_keys_rc = Rc::new(merged_keys);
     // Compute accumulator incrementally by summing child accumulators
     let left_acc = r_old.acc();
     let right_acc = curr.acc();
@@ -335,7 +366,7 @@ fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
 
     Box::new(Node::NonLeaf {
         hash: combined_hash,
-        keys: merged_keys,
+        keys: merged_keys_rc,
         acc,
         level: new_level,
         left: left_child,
@@ -424,9 +455,78 @@ fn run_benchmark(n: usize) {
     }
     let dur_del = t2.elapsed();
 
-    println!("Insert: total {:?}, per-op {:?}", dur_ins, dur_ins / (n as u32));
-    println!("Update: total {:?}, per-op {:?}", dur_upd, dur_upd / ((n/10) as u32));
-    println!("Delete: total {:?}, per-op {:?}", dur_del, dur_del / ((n/5) as u32));
+    // Query phase: check presence of all keys (index-first with fallback scan)
+    let t3 = Instant::now();
+    let mut found = 0usize;
+    for i in 0..n {
+        let key = format!("Key{}", i);
+        if let Some(&idx) = tree.index.get(&key) {
+            if idx < tree.roots.len() && tree.roots[idx].has_key(&key) {
+                found += 1;
+                continue;
+            }
+        }
+        // fallback scan for this key only
+        if tree.roots.iter().any(|r| r.has_key(&key)) {
+            found += 1;
+        }
+    }
+    let dur_q = t3.elapsed();
+
+    // Witness verification sampling
+    let sample = std::cmp::min(1000, n);
+    let t4 = Instant::now();
+    let mut verify_total = 0usize;
+    let mut verify_ok = 0usize;
+    for i in 0..sample {
+        let key = format!("Key{}", (i * 13) % n);
+        // locate root (index-first)
+        let mut located: Option<usize> = None;
+        if let Some(&idx) = tree.index.get(&key) {
+            if idx < tree.roots.len() && tree.roots[idx].has_key(&key) {
+                located = Some(idx);
+            }
+        }
+        if located.is_none() {
+            located = tree.roots.iter().position(|r| r.has_key(&key));
+        }
+        if let Some(idx) = located {
+            let acc = tree.roots[idx].acc();
+            let witness = Acc::create_witness(&acc, &key);
+            if Acc::verify_membership(&acc, &witness, &key) {
+                verify_ok += 1;
+            }
+            verify_total += 1;
+        }
+    }
+    let dur_v = t4.elapsed();
+
+    println!(
+        "Insert: total {:?}, per-op {:?}",
+        dur_ins,
+        dur_ins / (n as u32)
+    );
+    println!(
+        "Update: total {:?}, per-op {:?}",
+        dur_upd,
+        dur_upd / ((n / 10) as u32)
+    );
+    println!(
+        "Delete: total {:?}, per-op {:?}",
+        dur_del,
+        dur_del / ((n / 5) as u32)
+    );
+    println!(
+        "Query: total {:?}, per-op {:?}, found {}/{}",
+        dur_q,
+        dur_q / (n as u32),
+        found,
+        n
+    );
+    println!(
+        "Verify(sample {}): total {:?}, ok {}/{}",
+        sample, dur_v, verify_ok, verify_total
+    );
 }
 
 fn print_tree(tree: &AccumulatorTree) {
@@ -446,9 +546,105 @@ fn print_tree(tree: &AccumulatorTree) {
 fn render_keys(node: &Node) -> String {
     let keys = match node {
         Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
-        Node::NonLeaf { keys, .. } => keys.clone(),
+        Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
     };
     let mut entries: Vec<_> = keys.iter().map(|(k, v)| (k.clone(), *v)).collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     format!("{:?}", entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn verify_node_invariant(node: &Box<Node>) {
+        match &**node {
+            Node::Leaf { key, fid, .. } => {
+                // hash
+                let expected_hash = leaf_hash(key, fid);
+                assert_eq!(node.hash_bytes(), expected_hash);
+                // acc
+                let keys = MultiSet::from_vec(vec![key.clone()]);
+                let expected_acc = Acc::cal_acc_g1(&keys);
+                assert_eq!(node.acc(), expected_acc);
+            }
+            Node::NonLeaf {
+                hash,
+                keys,
+                acc,
+                left,
+                right,
+                ..
+            } => {
+                // keys correctness: should equal collected leaves
+                let mut collected: Vec<String> = left
+                    .collect_leaves(None)
+                    .into_iter()
+                    .chain(right.collect_leaves(None).into_iter())
+                    .map(|(k, _f)| k)
+                    .collect();
+                collected.sort();
+                let mut stored_keys: Vec<String> =
+                    keys.as_ref().iter().map(|(k, _v)| k.clone()).collect();
+                stored_keys.sort();
+                assert_eq!(collected, stored_keys);
+
+                // acc correctness
+                let expected_acc = Acc::cal_acc_g1(keys.as_ref());
+                assert_eq!(*acc, expected_acc);
+
+                // hash correctness
+                let expected_hash = nonleaf_hash(left.hash_bytes(), right.hash_bytes());
+                assert_eq!(*hash, expected_hash);
+
+                // recurse
+                verify_node_invariant(left);
+                verify_node_invariant(right);
+            }
+        }
+    }
+
+    #[test]
+    fn test_tree_operations_invariants() {
+        let mut tree = AccumulatorTree::new();
+
+        // insert
+        for i in 0..8 {
+            tree.insert(format!("K{}", i), format!("F{}", i));
+        }
+
+        // verify invariants for all roots
+        for root in tree.roots.iter() {
+            verify_node_invariant(root);
+        }
+
+        // verify index mapping correctness
+        for i in 0..8 {
+            let k = format!("K{}", i);
+            assert!(tree.index.contains_key(&k));
+            let idx = tree.index.get(&k).unwrap();
+            assert!(*idx < tree.roots.len());
+            assert!(tree.roots[*idx].has_key(&k));
+        }
+
+        // update
+        tree.update("K3", "F3_u".to_string());
+        for root in tree.roots.iter() {
+            verify_node_invariant(root);
+        }
+
+        // delete
+        tree.delete("K2");
+        for root in tree.roots.iter() {
+            verify_node_invariant(root);
+        }
+
+        // verify membership witness for an existing key
+        let any_root = &tree.roots[0];
+        if let Node::Leaf { key, .. } = &**any_root {
+            let acc = any_root.acc();
+            let witness = Acc::create_witness(&acc, key);
+            assert!(Acc::verify_membership(&acc, &witness, key));
+        }
+    }
 }
