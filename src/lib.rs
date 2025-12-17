@@ -7,6 +7,21 @@ use std::rc::Rc;
 use std::time::Instant;
 
 type Hash = [u8; 32];
+fn leaf_hash(key: &str, fid: &str) -> Hash {
+    let mut hasher = Sha256::new();
+    hasher.update((key.len() as u32).to_be_bytes());
+    hasher.update(key.as_bytes());
+    hasher.update((fid.len() as u32).to_be_bytes());
+    hasher.update(fid.as_bytes());
+    hasher.finalize().into()
+}
+
+fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
+    let mut hasher = Sha256::new();
+    hasher.update(&left);
+    hasher.update(&right);
+    hasher.finalize().into()
+}
 
 #[derive(Debug, Clone)]
 pub enum Node {
@@ -78,60 +93,48 @@ impl Node {
     }
 }
 
-pub struct AccumulatorTree {
-    pub roots: Vec<Box<Node>>,
-}
-
-impl AccumulatorTree {
-    pub fn new() -> Self {
-        AccumulatorTree { roots: Vec::new() }
-    }
-
-    pub fn insert(&mut self, key: String, fid: String) {
-        let curr = Box::new(Node::Leaf { key, fid, level: 0 });
-        self.merge_root(curr);
-    }
-
-    pub fn merge_root(&mut self, mut node: Box<Node>) {
-        // Merge nodes of the same level until there is no collision.
-        loop {
-            if let Some(idx) = self.roots.iter().position(|r| r.level() == node.level()) {
-                let other = self.roots.remove(idx);
-                node = merge(other, node);
-            } else {
-                self.roots.push(node);
-                self.roots.sort_by_key(|n| n.level());
-                break;
-            }
-        }
-    }
-
-    pub fn update(&mut self, key: &str, new_fid: String) {
-        if let Some(root) = self.roots.iter_mut().find(|r| r.has_key(key)) {
-            update_recursive(root, key, &new_fid);
-        } else {
-            println!("Key {} not found for update", key);
-        }
-    }
-
-    pub fn delete(&mut self, key: &str) {
-        if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
-            let root = self.roots.remove(idx);
-            if let Some(new_root) = delete_recursive(root, key) {
-                self.roots.push(new_root);
-                self.roots.sort_by_key(|n| n.level());
-            }
-        } else {
-            println!("Key {} not found for delete", key);
-        }
-    }
-}
-
 fn node_keys_from(node: &Box<Node>) -> MultiSet<String> {
     match &**node {
         Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
         Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
     }
+}
+
+fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
+    let new_level = curr.level() + 1;
+    let combined_hash = nonleaf_hash(r_old.hash_bytes(), curr.hash_bytes());
+
+    let left_keys_rc: Rc<MultiSet<String>> = match &*r_old {
+        Node::Leaf { key, .. } => Rc::new(MultiSet::from_vec(vec![key.clone()])),
+        Node::NonLeaf { keys, .. } => keys.clone(),
+    };
+
+    let right_keys_rc: Rc<MultiSet<String>> = match &*curr {
+        Node::Leaf { key, .. } => Rc::new(MultiSet::from_vec(vec![key.clone()])),
+        Node::NonLeaf { keys, .. } => keys.clone(),
+    };
+
+    let merged_keys = &*left_keys_rc + &*right_keys_rc;
+    let merged_keys_rc = Rc::new(merged_keys);
+    // Compute accumulator incrementally by summing child accumulators
+    let left_acc = r_old.acc();
+    let right_acc = curr.acc();
+    let mut acc_proj = left_acc.into_projective();
+    acc_proj.add_assign_mixed(&right_acc);
+    let acc = acc_proj.into_affine();
+
+    // keep children boxes directly
+    let left_child = r_old;
+    let right_child = curr;
+
+    Box::new(Node::NonLeaf {
+        hash: combined_hash,
+        keys: merged_keys_rc,
+        acc,
+        level: new_level,
+        left: left_child,
+        right: right_child,
+    })
 }
 
 fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
@@ -267,57 +270,53 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (b
     }
 }
 
-fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
-    let new_level = curr.level() + 1;
-    let combined_hash = nonleaf_hash(r_old.hash_bytes(), curr.hash_bytes());
-
-    let left_keys_rc: Rc<MultiSet<String>> = match &*r_old {
-        Node::Leaf { key, .. } => Rc::new(MultiSet::from_vec(vec![key.clone()])),
-        Node::NonLeaf { keys, .. } => keys.clone(),
-    };
-
-    let right_keys_rc: Rc<MultiSet<String>> = match &*curr {
-        Node::Leaf { key, .. } => Rc::new(MultiSet::from_vec(vec![key.clone()])),
-        Node::NonLeaf { keys, .. } => keys.clone(),
-    };
-
-    let merged_keys = &*left_keys_rc + &*right_keys_rc;
-    let merged_keys_rc = Rc::new(merged_keys);
-    // Compute accumulator incrementally by summing child accumulators
-    let left_acc = r_old.acc();
-    let right_acc = curr.acc();
-    let mut acc_proj = left_acc.into_projective();
-    acc_proj.add_assign_mixed(&right_acc);
-    let acc = acc_proj.into_affine();
-
-    // keep children boxes directly
-    let left_child = r_old;
-    let right_child = curr;
-
-    Box::new(Node::NonLeaf {
-        hash: combined_hash,
-        keys: merged_keys_rc,
-        acc,
-        level: new_level,
-        left: left_child,
-        right: right_child,
-    })
+pub struct AccumulatorTree {
+    pub roots: Vec<Box<Node>>,
 }
 
-fn leaf_hash(key: &str, fid: &str) -> Hash {
-    let mut hasher = Sha256::new();
-    hasher.update((key.len() as u32).to_be_bytes());
-    hasher.update(key.as_bytes());
-    hasher.update((fid.len() as u32).to_be_bytes());
-    hasher.update(fid.as_bytes());
-    hasher.finalize().into()
-}
+impl AccumulatorTree {
+    pub fn new() -> Self {
+        AccumulatorTree { roots: Vec::new() }
+    }
 
-fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
-    let mut hasher = Sha256::new();
-    hasher.update(&left);
-    hasher.update(&right);
-    hasher.finalize().into()
+    pub fn insert(&mut self, key: String, fid: String) {
+        let curr = Box::new(Node::Leaf { key, fid, level: 0 });
+        self.merge_root(curr);
+    }
+
+    pub fn merge_root(&mut self, mut node: Box<Node>) {
+        // Merge nodes of the same level until there is no collision.
+        loop {
+            if let Some(idx) = self.roots.iter().position(|r| r.level() == node.level()) {
+                let other = self.roots.remove(idx);
+                node = merge(other, node);
+            } else {
+                self.roots.push(node);
+                self.roots.sort_by_key(|n| n.level());
+                break;
+            }
+        }
+    }
+
+    pub fn update(&mut self, key: &str, new_fid: String) {
+        if let Some(root) = self.roots.iter_mut().find(|r| r.has_key(key)) {
+            update_recursive(root, key, &new_fid);
+        } else {
+            println!("Key {} not found for update", key);
+        }
+    }
+
+    pub fn delete(&mut self, key: &str) {
+        if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
+            let root = self.roots.remove(idx);
+            if let Some(new_root) = delete_recursive(root, key) {
+                self.roots.push(new_root);
+                self.roots.sort_by_key(|n| n.level());
+            }
+        } else {
+            println!("Key {} not found for delete", key);
+        }
+    }
 }
 
 pub fn demo() {
