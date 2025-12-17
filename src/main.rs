@@ -1,11 +1,8 @@
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate log;
-
-mod acc;
-
 use acc::{Acc, Accumulator, G1Affine, MultiSet};
+use ark_ec::{AffineCurve, ProjectiveCurve};
+use sha2::{Digest, Sha256};
+
+type Hash = [u8; 32];
 
 #[derive(Debug, Clone)]
 enum Node {
@@ -15,7 +12,7 @@ enum Node {
         level: usize,
     },
     NonLeaf {
-        hash: String,
+        hash: Hash,
         keys: MultiSet<String>,
         acc: G1Affine,
         level: usize,
@@ -32,11 +29,15 @@ impl Node {
         }
     }
 
-    fn hash(&self) -> String {
+    fn hash_bytes(&self) -> Hash {
         match self {
-            Node::Leaf { key, fid, .. } => calculate_hash(key, fid),
-            Node::NonLeaf { hash, .. } => hash.clone(),
+            Node::Leaf { key, fid, .. } => leaf_hash(key, fid),
+            Node::NonLeaf { hash, .. } => *hash,
         }
+    }
+
+    fn hash(&self) -> Hash {
+        self.hash_bytes()
     }
 
     fn acc(&self) -> G1Affine {
@@ -120,79 +121,102 @@ impl AccumulatorTree {
     fn delete(&mut self, key: &str) {
         if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
             let root = self.roots.remove(idx);
-            let leaves = root.collect_leaves(Some(key));
-            for (k, f) in leaves {
-                self.insert(k, f);
+            if let Some(new_root) = delete_recursive(root, key) {
+                self.roots.push(new_root);
+                self.roots.sort_by_key(|n| n.level());
             }
         } else {
             println!("Key {} not found for delete", key);
         }
     }
+}
 
-    fn global_multiset(&self) -> MultiSet<String> {
-        let mut vec = Vec::new();
-        for root in &self.roots {
-            for (k, _) in root.collect_leaves(None) {
-                vec.push(k);
+fn node_keys_from(node: &Box<Node>) -> MultiSet<String> {
+    match &**node {
+        Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
+        Node::NonLeaf { keys, .. } => keys.clone(),
+    }
+}
+
+fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
+    match *node {
+        Node::Leaf { key, fid, level } => {
+            if key == target_key {
+                // remove this leaf
+                None
+            } else {
+                Some(Box::new(Node::Leaf { key, fid, level }))
             }
         }
-        MultiSet::from_vec(vec)
-    }
+        Node::NonLeaf {
+            hash: _,
+            keys: _,
+            acc: _,
+            level,
+            left,
+            right,
+        } => {
+            // quick check: if this subtree doesn't contain the key, keep it
+            let subtree_keys = {
+                let mut ks = node_keys_from(&left);
+                ks = &ks + &node_keys_from(&right);
+                ks
+            };
+            if !subtree_keys.contains_key(target_key) {
+                // reconstruct original node
+                let mut left_child = left;
+                let mut right_child = right;
+                let combined_hash = nonleaf_hash(left_child.hash_bytes(), right_child.hash_bytes());
+                let mut acc_proj = left_child.acc().into_projective();
+                acc_proj.add_assign_mixed(&right_child.acc());
+                let acc = acc_proj.into_affine();
+                let keys = subtree_keys;
+                return Some(Box::new(Node::NonLeaf {
+                    hash: combined_hash,
+                    keys,
+                    acc,
+                    level,
+                    left: left_child,
+                    right: right_child,
+                }));
+            }
 
-    fn global_acc(&self) -> G1Affine {
-        Acc::cal_acc_g1(&self.global_multiset())
-    }
+            // otherwise descend
+            let left_res = delete_recursive(left, target_key);
+            let right_res = delete_recursive(right, target_key);
 
-    fn insert_with_proof(&mut self, key: String, fid: String) -> (G1Affine, G1Affine, G1Affine) {
-        let old_acc = self.global_acc();
-        // expected new accumulator computed via dynamic op
-        let (new_from_dyn, proof) = Acc::add_element(&old_acc, &key);
-        // apply insert into tree
-        self.insert(key.clone(), fid);
-        let new_acc = self.global_acc();
-        assert_eq!(new_from_dyn, new_acc);
-        (old_acc, new_acc, proof)
-    }
-
-    fn delete_with_proof(&mut self, key: &str) -> Option<(G1Affine, G1Affine, G1Affine)> {
-        let old_acc = self.global_acc();
-        // perform delete
-        if !self.roots.iter().any(|r| r.has_key(key)) {
-            return None;
+            match (left_res, right_res) {
+                (Some(l), Some(r)) => {
+                    // both children remain -> rebuild nonleaf
+                    let combined_hash = nonleaf_hash(l.hash_bytes(), r.hash_bytes());
+                    let mut acc_proj = l.acc().into_projective();
+                    acc_proj.add_assign_mixed(&r.acc());
+                    let acc = acc_proj.into_affine();
+                    let keys = {
+                        let lk = node_keys_from(&l);
+                        let rk = node_keys_from(&r);
+                        &lk + &rk
+                    };
+                    Some(Box::new(Node::NonLeaf {
+                        hash: combined_hash,
+                        keys,
+                        acc,
+                        level,
+                        left: l,
+                        right: r,
+                    }))
+                }
+                (Some(l), None) => {
+                    // promote left
+                    Some(l)
+                }
+                (None, Some(r)) => {
+                    // promote right
+                    Some(r)
+                }
+                (None, None) => None,
+            }
         }
-        self.delete(key);
-        let new_acc = self.global_acc();
-        let (new_from_dyn, proof) = Acc::remove_element(&old_acc, &key.to_string());
-        assert_eq!(new_from_dyn, new_acc);
-        Some((old_acc, new_acc, proof))
-    }
-
-    fn rename_with_proof(
-        &mut self,
-        old_key: &str,
-        new_key: String,
-        new_fid: String,
-    ) -> Option<(G1Affine, G1Affine, G1Affine)> {
-        if !self.roots.iter().any(|r| r.has_key(old_key)) {
-            return None;
-        }
-        let old_acc = self.global_acc();
-        // dynamic update (old -> new)
-        let (new_from_dyn, proof) = Acc::update_element(&old_acc, &old_key.to_string(), &new_key);
-        // apply rename: remove old and insert new
-        self.delete(old_key);
-        self.insert(new_key.clone(), new_fid);
-        let new_acc = self.global_acc();
-        assert_eq!(new_from_dyn, new_acc);
-        Some((old_acc, new_acc, proof))
-    }
-
-    fn membership_witness(&self, key: &str) -> Option<G1Affine> {
-        if !self.roots.iter().any(|r| r.has_key(key)) {
-            return None;
-        }
-        let acc = self.global_acc();
-        Some(Acc::create_witness(&acc, &key.to_string()))
     }
 }
 
@@ -212,6 +236,7 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
         Node::NonLeaf {
             ref mut hash,
             ref keys,
+            ref mut acc,
             ref mut left,
             ref mut right,
             ..
@@ -229,8 +254,12 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
             }
 
             if changed {
-                // Recompute hash from left and right child hashes
-                *hash = format!("{}||{}", left.hash(), right.hash());
+                // Recompute hash = H(left.hash || right.hash)
+                *hash = nonleaf_hash(left.hash_bytes(), right.hash_bytes());
+                // Incremental update: recompute accumulator by adding children accumulators
+                let mut acc_proj = left.acc().into_projective();
+                acc_proj.add_assign_mixed(&right.acc());
+                *acc = acc_proj.into_affine();
             }
 
             changed
@@ -240,7 +269,7 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
 
 fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
     let new_level = curr.level() + 1;
-    let combined_hash = format!("{}||{}", r_old.hash(), curr.hash());
+    let combined_hash = nonleaf_hash(r_old.hash_bytes(), curr.hash_bytes());
 
     let left_keys = match &*r_old {
         Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
@@ -253,17 +282,16 @@ fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
     };
 
     let merged_keys = &left_keys + &right_keys;
-    let acc = Acc::cal_acc_g1(&merged_keys);
+    // Compute accumulator incrementally by summing child accumulators
+    let left_acc = r_old.acc();
+    let right_acc = curr.acc();
+    let mut acc_proj = left_acc.into_projective();
+    acc_proj.add_assign_mixed(&right_acc);
+    let acc = acc_proj.into_affine();
 
-    // build left/right child leaves (for NonLeaf we keep children directly)
-    let left_child = match r_old {
-        r @ Box::new(Node::Leaf { .. }) => r,
-        r @ Box::new(Node::NonLeaf { .. }) => r,
-    };
-    let right_child = match curr {
-        c @ Box::new(Node::Leaf { .. }) => c,
-        c @ Box::new(Node::NonLeaf { .. }) => c,
-    };
+    // keep children boxes directly
+    let left_child = r_old;
+    let right_child = curr;
 
     Box::new(Node::NonLeaf {
         hash: combined_hash,
@@ -275,8 +303,20 @@ fn merge(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
     })
 }
 
-fn calculate_hash(key: &str, fid: &str) -> String {
-    format!("hash({}+{})", key, fid)
+fn leaf_hash(key: &str, fid: &str) -> Hash {
+    let mut hasher = Sha256::new();
+    hasher.update((key.len() as u32).to_be_bytes());
+    hasher.update(key.as_bytes());
+    hasher.update((fid.len() as u32).to_be_bytes());
+    hasher.update(fid.as_bytes());
+    hasher.finalize().into()
+}
+
+fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
+    let mut hasher = Sha256::new();
+    hasher.update(&left);
+    hasher.update(&right);
+    hasher.finalize().into()
 }
 
 fn main() {
@@ -309,51 +349,18 @@ fn main() {
     println!("\n--- Delete Key2 ---");
     tree.delete("Key2");
     print_tree(&tree);
-
-    // Demonstrate CRUD with proofs
-    println!("\n--- Insert Key6 with proof ---");
-    let (old_acc, new_acc, proof) = tree.insert_with_proof("Key6".to_string(), "Fid6".to_string());
-    println!(
-        "Old acc: {:?}\nNew acc: {:?}\nProof (witness): {:?}",
-        old_acc, new_acc, proof
-    );
-
-    println!("\n--- Membership witness for Key3 ---");
-    if let Some(wit) = tree.membership_witness("Key3") {
-        let acc = tree.global_acc();
-        println!(
-            "Witness: {:?}, verify: {}",
-            wit,
-            Acc::verify_membership(&acc, &wit, &"Key3".to_string())
-        );
-    }
-
-    println!("\n--- Rename Key3 -> Key3_new with proof ---");
-    if let Some((old_acc, new_acc, proof)) =
-        tree.rename_with_proof("Key3", "Key3_new".to_string(), "Fid3_new".to_string())
-    {
-        println!(
-            "Rename proof verify via Acc::verify_update: {}",
-            Acc::verify_update(
-                &old_acc,
-                &new_acc,
-                &proof,
-                &"Key3".to_string(),
-                &"Key3_new".to_string()
-            )
-        );
-    }
 }
 
 fn print_tree(tree: &AccumulatorTree) {
     println!("Tree State (Roots: {}):", tree.roots.len());
     for (i, node) in tree.roots.iter().enumerate() {
+        let n: &Node = node.as_ref();
         println!(
             "  Root[{}]: Level {}, Hash {}, Keys {}",
             i,
-            node.level(),
-            node.hash(),
-            render_keys(node)
+            n.level(),
+            hex::encode(n.hash()),
+            render_keys(n)
         );
     }
 }
