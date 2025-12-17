@@ -215,7 +215,10 @@ fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
     }
 }
 
-fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bool {
+// Returns (hash_changed, acc_changed).
+// - `hash_changed` indicates any child/leaf hash changed (so parent's hash must be recomputed).
+// - `acc_changed` indicates any child's accumulator changed (so parent's acc must be recomputed).
+fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (bool, bool) {
     match **node {
         Node::Leaf {
             ref mut fid,
@@ -224,9 +227,10 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
         } => {
             if key == target_key {
                 *fid = new_fid.to_string();
-                return true;
+                // leaf hash changed (fid part), but its accumulator (based on key) did not change
+                return (true, false);
             }
-            false
+            (false, false)
         }
         Node::NonLeaf {
             ref mut hash,
@@ -237,27 +241,28 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bo
             ..
         } => {
             if !keys.contains_key(target_key) {
-                return false;
+                return (false, false);
             }
 
-            let mut changed = false;
-            if update_recursive(left, target_key, new_fid) {
-                changed = true;
-            }
-            if update_recursive(right, target_key, new_fid) {
-                changed = true;
-            }
+            let (left_hash_changed, left_acc_changed) = update_recursive(left, target_key, new_fid);
+            let (right_hash_changed, right_acc_changed) =
+                update_recursive(right, target_key, new_fid);
 
-            if changed {
-                // Recompute hash = H(left.hash || right.hash)
+            let hash_changed = left_hash_changed || right_hash_changed;
+            let acc_changed = left_acc_changed || right_acc_changed;
+
+            if hash_changed {
                 *hash = nonleaf_hash(left.hash_bytes(), right.hash_bytes());
+            }
+
+            if acc_changed {
                 // Incremental update: recompute accumulator by adding children accumulators
                 let mut acc_proj = left.acc().into_projective();
                 acc_proj.add_assign_mixed(&right.acc());
                 *acc = acc_proj.into_affine();
             }
 
-            changed
+            (hash_changed, acc_changed)
         }
     }
 }
