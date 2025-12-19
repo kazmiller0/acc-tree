@@ -1,5 +1,5 @@
 use acc::{Acc, Accumulator, G1Affine, MultiSet};
-use ark_ec::{AffineCurve, ProjectiveCurve};
+// ark_ec traits not needed here
 use sha2::{Digest, Sha256};
 use std::rc::Rc;
 
@@ -28,6 +28,7 @@ pub enum Node {
         fid: String,
         acc: G1Affine,
         level: usize,
+        deleted: bool,
     },
     NonLeaf {
         hash: Hash,
@@ -49,21 +50,37 @@ impl Node {
 
     pub fn hash(&self) -> Hash {
         match self {
-            Node::Leaf { key, fid, .. } => leaf_hash(key, fid),
+            Node::Leaf {
+                key, fid, deleted, ..
+            } => {
+                if *deleted {
+                    // tombstoned leaf contributes an empty hash
+                    leaf_hash("", "")
+                } else {
+                    leaf_hash(key, fid)
+                }
+            }
             Node::NonLeaf { hash, .. } => *hash,
         }
     }
 
     pub fn acc(&self) -> G1Affine {
         match self {
-            Node::Leaf { acc, .. } => *acc,
+            Node::Leaf { acc, deleted, .. } => {
+                if *deleted {
+                    // empty multiset accumulator
+                    Acc::cal_acc_g1(&MultiSet::<String>::new())
+                } else {
+                    *acc
+                }
+            }
             Node::NonLeaf { acc, .. } => *acc,
         }
     }
 
     pub fn has_key(&self, target_key: &str) -> bool {
         match self {
-            Node::Leaf { key, .. } => key == target_key,
+            Node::Leaf { key, deleted, .. } => !*deleted && key == target_key,
             Node::NonLeaf { keys, .. } => keys.contains_key(target_key),
         }
     }
@@ -74,7 +91,12 @@ impl Node {
     ) -> std::vec::IntoIter<(String, String)> {
         let mut v: Vec<(String, String)> = Vec::new();
         match self {
-            Node::Leaf { key, fid, .. } => {
+            Node::Leaf {
+                key, fid, deleted, ..
+            } => {
+                if *deleted {
+                    return v.into_iter();
+                }
                 if let Some(ex) = exclude_key {
                     if ex == key.as_str() {
                         return v.into_iter();
@@ -118,9 +140,10 @@ pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -
         Node::Leaf {
             ref mut fid,
             ref key,
+            ref deleted,
             ..
         } => {
-            if key == target_key {
+            if key == target_key && !*deleted {
                 *fid = new_fid.to_string();
                 true // hash changed
             } else {
@@ -131,77 +154,175 @@ pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -
             ref mut hash,
             ref mut left,
             ref mut right,
+            ref mut keys,
+            ref mut acc,
             ..
         } => {
-            if left.has_key(target_key) {
-                let h_changed = update_recursive(left, target_key, new_fid);
-                if h_changed {
-                    *hash = nonleaf_hash(left.hash(), right.hash());
-                }
-                h_changed
+            let changed = if left.has_key(target_key) || contains_any(left, target_key) {
+                update_recursive(left, target_key, new_fid)
             } else {
-                let h_changed = update_recursive(right, target_key, new_fid);
-                if h_changed {
-                    *hash = nonleaf_hash(left.hash(), right.hash());
-                }
-                h_changed
+                update_recursive(right, target_key, new_fid)
+            };
+            if changed {
+                // recompute keys/acc/hash from children
+                let new_keys = Rc::new(&node_keys_from(&*left) + &node_keys_from(&*right));
+                *keys = new_keys.clone();
+                *acc = Acc::cal_acc_g1(&new_keys);
+                *hash = nonleaf_hash(left.hash(), right.hash());
             }
+            changed
         }
     }
 }
 
-pub fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
-    if !node.has_key(target_key) {
-        return Some(node);
-    }
-
+pub fn delete_recursive(node: Box<Node>, target_key: &str) -> Box<Node> {
     match *node {
-        Node::Leaf { .. } => {
-            // If we reached a leaf here, `node.has_key(target_key)` was true,
-            // so this leaf must be the target and should be removed.
-            None
+        Node::Leaf {
+            key,
+            fid,
+            acc: _,
+            level,
+            deleted,
+        } => {
+            if key == target_key && !deleted {
+                // mark tombstone and clear accumulator
+                let empty_acc = Acc::cal_acc_g1(&MultiSet::<String>::new());
+                Box::new(Node::Leaf {
+                    key,
+                    fid,
+                    acc: empty_acc,
+                    level,
+                    deleted: true,
+                })
+            } else {
+                // compute acc before moving `key`
+                let leaf_acc = if deleted {
+                    Acc::cal_acc_g1(&MultiSet::<String>::new())
+                } else {
+                    Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]))
+                };
+                Box::new(Node::Leaf {
+                    key,
+                    fid,
+                    acc: leaf_acc,
+                    level,
+                    deleted,
+                })
+            }
         }
         Node::NonLeaf {
-            level, left, right, ..
+            hash: _,
+            keys: _,
+            acc: _,
+            level,
+            left,
+            right,
         } => {
-            let left_res = delete_recursive(left, target_key);
-            let right_res = delete_recursive(right, target_key);
-
-            match (left_res, right_res) {
-                (Some(l), Some(r)) => {
-                    let mut acc_proj = l.acc().into_projective();
-                    acc_proj.add_assign_mixed(&r.acc());
-                    Some(Box::new(Node::NonLeaf {
-                        hash: nonleaf_hash(l.hash(), r.hash()),
-                        keys: Rc::new(&node_keys_from(&l) + &node_keys_from(&r)),
-                        acc: acc_proj.into_affine(),
-                        level,
-                        left: l,
-                        right: r,
-                    }))
-                }
-                (Some(l), None) => Some(l),
-                (None, Some(r)) => Some(r),
-                (None, None) => None,
-            }
+            let l = delete_recursive(left, target_key);
+            let r = delete_recursive(right, target_key);
+            let new_keys = Rc::new(&node_keys_from(&l) + &node_keys_from(&r));
+            let new_acc = Acc::cal_acc_g1(&new_keys);
+            let new_hash = nonleaf_hash(l.hash(), r.hash());
+            Box::new(Node::NonLeaf {
+                hash: new_hash,
+                keys: new_keys,
+                acc: new_acc,
+                level,
+                left: l,
+                right: r,
+            })
         }
     }
 }
 
 fn node_keys_from(node: &Node) -> MultiSet<String> {
     match node {
-        Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
+        Node::Leaf { key, deleted, .. } => {
+            if *deleted {
+                MultiSet::new()
+            } else {
+                MultiSet::from_vec(vec![key.clone()])
+            }
+        }
         Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
     }
 }
 
+fn contains_any(node: &Node, target_key: &str) -> bool {
+    match node {
+        Node::Leaf { key, .. } => key == target_key,
+        Node::NonLeaf { left, right, .. } => {
+            contains_any(left, target_key) || contains_any(right, target_key)
+        }
+    }
+}
+
+fn revive_recursive(node: Box<Node>, target_key: &str, new_fid: &str) -> Box<Node> {
+    match *node {
+        Node::Leaf {
+            key,
+            fid,
+            acc: _,
+            level,
+            deleted,
+        } => {
+            if key == target_key && deleted {
+                let leaf_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]));
+                Box::new(Node::Leaf {
+                    key,
+                    fid: new_fid.to_string(),
+                    acc: leaf_acc,
+                    level,
+                    deleted: false,
+                })
+            } else {
+                // preserve as-is; ensure acc is correct for deleted/non-deleted leaf
+                let leaf_acc = if deleted {
+                    Acc::cal_acc_g1(&MultiSet::<String>::new())
+                } else {
+                    Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]))
+                };
+                Box::new(Node::Leaf {
+                    key,
+                    fid,
+                    acc: leaf_acc,
+                    level,
+                    deleted,
+                })
+            }
+        }
+        Node::NonLeaf {
+            hash: _,
+            keys: _,
+            acc: _,
+            level,
+            left,
+            right,
+        } => {
+            let l = revive_recursive(left, target_key, new_fid);
+            let r = revive_recursive(right, target_key, new_fid);
+            let new_keys = Rc::new(&node_keys_from(&l) + &node_keys_from(&r));
+            let new_acc = Acc::cal_acc_g1(&new_keys);
+            let new_hash = nonleaf_hash(l.hash(), r.hash());
+            Box::new(Node::NonLeaf {
+                hash: new_hash,
+                keys: new_keys,
+                acc: new_acc,
+                level,
+                left: l,
+                right: r,
+            })
+        }
+    }
+}
+
 fn merge_nodes(left: Box<Node>, right: Box<Node>) -> Box<Node> {
-    let mut acc_proj = left.acc().into_projective();
-    acc_proj.add_assign_mixed(&right.acc());
+    let new_keys = Rc::new(&node_keys_from(&left) + &node_keys_from(&right));
+    let new_acc = Acc::cal_acc_g1(&new_keys);
     Box::new(Node::NonLeaf {
         hash: nonleaf_hash(left.hash(), right.hash()),
-        keys: Rc::new(&node_keys_from(&left) + &node_keys_from(&right)),
-        acc: acc_proj.into_affine(),
+        keys: new_keys,
+        acc: new_acc,
         level: right.level() + 1,
         left,
         right,
@@ -235,10 +356,12 @@ impl AccumulatorTree {
     }
 
     pub fn insert(&mut self, key: String, fid: String) {
-        // If key already exists in the tree, perform an update instead of
-        // inserting a duplicate leaf to keep keys unique.
-        if self.get(&key).is_some() {
-            self.update(&key, fid);
+        // If there's an existing (possibly tombstoned) leaf for `key`, try to revive it.
+        if let Some(idx) = self.roots.iter().position(|r| contains_any(r, &key)) {
+            let root = self.roots.remove(idx);
+            let revived = revive_recursive(root, &key, &fid);
+            self.roots.push(revived);
+            self.normalize();
             return;
         }
 
@@ -248,6 +371,7 @@ impl AccumulatorTree {
             fid,
             acc: leaf_acc,
             level: 0,
+            deleted: false,
         }));
         self.normalize();
     }
@@ -268,11 +392,10 @@ impl AccumulatorTree {
     }
 
     pub fn delete(&mut self, key: &str) {
-        if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
+        if let Some(idx) = self.roots.iter().position(|r| contains_any(r, key)) {
             let root = self.roots.remove(idx);
-            if let Some(new_root) = delete_recursive(root, key) {
-                self.roots.push(new_root);
-            }
+            let new_root = delete_recursive(root, key);
+            self.roots.push(new_root);
             self.normalize();
         }
     }
