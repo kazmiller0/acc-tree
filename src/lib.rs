@@ -3,10 +3,9 @@ use ark_ec::{AffineCurve, ProjectiveCurve};
 use sha2::{Digest, Sha256};
 use std::rc::Rc;
 
-// --- 1. 类型定义与基础哈希工具 ---
-type Hash = [u8; 32];
+pub type Hash = [u8; 32];
 
-fn leaf_hash(key: &str, fid: &str) -> Hash {
+pub fn leaf_hash(key: &str, fid: &str) -> Hash {
     let mut hasher = Sha256::new();
     hasher.update((key.len() as u32).to_be_bytes());
     hasher.update(key.as_bytes());
@@ -15,19 +14,19 @@ fn leaf_hash(key: &str, fid: &str) -> Hash {
     hasher.finalize().into()
 }
 
-fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
+pub fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
     let mut hasher = Sha256::new();
     hasher.update(&left);
     hasher.update(&right);
     hasher.finalize().into()
 }
 
-// --- 2. 核心数据模型 (Node) ---
 #[derive(Debug, Clone)]
 pub enum Node {
     Leaf {
         key: String,
         fid: String,
+        acc: G1Affine,
         level: usize,
     },
     NonLeaf {
@@ -57,11 +56,8 @@ impl Node {
 
     pub fn acc(&self) -> G1Affine {
         match self {
-            Node::Leaf { key, .. } => {
-                let keys = MultiSet::from_vec(vec![key.clone()]);
-                Acc::cal_acc_g1(&keys)
-            }
-            Node::NonLeaf { acc, .. } => acc.clone(),
+            Node::Leaf { acc, .. } => *acc,
+            Node::NonLeaf { acc, .. } => *acc,
         }
     }
 
@@ -72,11 +68,7 @@ impl Node {
         }
     }
 
-    pub fn hash_bytes(&self) -> Hash {
-        self.hash()
-    }
-
-    fn collect_leaves_vec(&self) -> Vec<(String, String)> {
+    pub fn collect_leaves_vec(&self) -> Vec<(String, String)> {
         match self {
             Node::Leaf { key, fid, .. } => vec![(key.clone(), fid.clone())],
             Node::NonLeaf { left, right, .. } => {
@@ -92,10 +84,7 @@ impl Node {
     }
 }
 
-// --- 3. 统一的外部递归算法 (Recursive Logic) ---
-
-/// 递归查询
-fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
+pub fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
     match node {
         Node::Leaf { key, fid, .. } => {
             if key == target_key {
@@ -114,8 +103,7 @@ fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
     }
 }
 
-/// 递归更新
-fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (bool, bool) {
+pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (bool, bool) {
     match **node {
         Node::Leaf {
             ref mut fid,
@@ -130,10 +118,10 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (b
         }
         Node::NonLeaf {
             ref mut hash,
-            ref keys,
             ref mut acc,
             ref mut left,
             ref mut right,
+            ref keys,
             ..
         } => {
             if !keys.contains_key(target_key) {
@@ -141,8 +129,10 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (b
             }
             let (l_h, l_a) = update_recursive(left, target_key, new_fid);
             let (r_h, r_a) = update_recursive(right, target_key, new_fid);
+
             let h_changed = l_h || r_h;
             let a_changed = l_a || r_a;
+
             if h_changed {
                 *hash = nonleaf_hash(left.hash(), right.hash());
             }
@@ -156,18 +146,27 @@ fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (b
     }
 }
 
-/// 递归删除
-fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
+pub fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
     if !node.has_key(target_key) {
         return Some(node);
     }
 
     match *node {
-        Node::Leaf { key, fid, level } => {
+        Node::Leaf {
+            key,
+            fid,
+            acc,
+            level,
+        } => {
             if key == target_key {
                 None
             } else {
-                Some(Box::new(Node::Leaf { key, fid, level }))
+                Some(Box::new(Node::Leaf {
+                    key,
+                    fid,
+                    acc,
+                    level,
+                }))
             }
         }
         Node::NonLeaf {
@@ -177,12 +176,11 @@ fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> {
             let right_res = delete_recursive(right, target_key);
             match (left_res, right_res) {
                 (Some(l), Some(r)) => {
-                    let merged_keys = &node_keys_from(&l) + &node_keys_from(&r);
                     let mut acc_proj = l.acc().into_projective();
                     acc_proj.add_assign_mixed(&r.acc());
                     Some(Box::new(Node::NonLeaf {
                         hash: nonleaf_hash(l.hash(), r.hash()),
-                        keys: Rc::new(merged_keys),
+                        keys: Rc::new(&node_keys_from(&l) + &node_keys_from(&r)),
                         acc: acc_proj.into_affine(),
                         level,
                         left: l,
@@ -205,27 +203,16 @@ fn node_keys_from(node: &Box<Node>) -> MultiSet<String> {
 }
 
 fn merge_nodes(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
-    let new_level = curr.level() + 1;
-    let merged_keys = &node_keys_from(&r_old) + &node_keys_from(&curr);
     let mut acc_proj = r_old.acc().into_projective();
     acc_proj.add_assign_mixed(&curr.acc());
-
     Box::new(Node::NonLeaf {
         hash: nonleaf_hash(r_old.hash(), curr.hash()),
-        keys: Rc::new(merged_keys),
+        keys: Rc::new(&node_keys_from(&r_old) + &node_keys_from(&curr)),
         acc: acc_proj.into_affine(),
-        level: new_level,
+        level: curr.level() + 1,
         left: r_old,
         right: curr,
     })
-}
-
-// --- 4. 对外公开的 AccumulatorTree ---
-#[derive(Debug)]
-pub struct MerkleProof {
-    pub leaf_fid: String,
-    pub path: Vec<(Hash, bool)>,
-    pub root_hash: Hash,
 }
 
 pub struct AccumulatorTree {
@@ -234,15 +221,20 @@ pub struct AccumulatorTree {
 
 impl AccumulatorTree {
     pub fn new() -> Self {
-        AccumulatorTree { roots: Vec::new() }
+        Self { roots: Vec::new() }
     }
 
     pub fn insert(&mut self, key: String, fid: String) {
-        let mut node = Box::new(Node::Leaf { key, fid, level: 0 });
+        let leaf_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]));
+        let mut node = Box::new(Node::Leaf {
+            key,
+            fid,
+            acc: leaf_acc,
+            level: 0,
+        });
         loop {
             if let Some(idx) = self.roots.iter().position(|r| r.level() == node.level()) {
-                let other = self.roots.remove(idx);
-                node = merge_nodes(other, node);
+                node = merge_nodes(self.roots.remove(idx), node);
             } else {
                 self.roots.push(node);
                 self.roots.sort_by_key(|n| n.level());
@@ -252,8 +244,10 @@ impl AccumulatorTree {
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        let root = self.roots.iter().find(|r| r.has_key(key))?;
-        get_recursive(root, key)
+        self.roots
+            .iter()
+            .find(|r| r.has_key(key))
+            .and_then(|r| get_recursive(r, key))
     }
 
     pub fn update(&mut self, key: &str, new_fid: String) {
@@ -273,7 +267,6 @@ impl AccumulatorTree {
     }
 }
 
-// --- 6. 辅助工具与基准测试 ---
 pub mod utils;
 pub use utils::{print_tree, render_keys};
 
