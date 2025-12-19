@@ -61,11 +61,11 @@ pub fn run_benchmark(n: usize) {
         del_times.push(t2.elapsed());
 
         let t3 = Instant::now();
-        let mut found = 0usize;
+        let mut _found = 0usize;
         for i in 0..n {
             let key = format!("Key{}", i);
             if tree.roots.iter().any(|r| r.has_key(&key)) {
-                found += 1;
+                _found += 1;
             }
         }
         qry_times.push(t3.elapsed());

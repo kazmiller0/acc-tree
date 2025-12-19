@@ -127,20 +127,33 @@ pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -
             if !keys.contains_key(target_key) {
                 return (false, false);
             }
-            let (l_h, l_a) = update_recursive(left, target_key, new_fid);
-            let (r_h, r_a) = update_recursive(right, target_key, new_fid);
+
+            // Only recurse into the side that actually contains the key.
+            let (l_h, l_a, r_h, r_a) = if left.has_key(target_key) {
+                let (lh, la) = update_recursive(left, target_key, new_fid);
+                (lh, la, false, false)
+            } else {
+                let (rh, ra) = update_recursive(right, target_key, new_fid);
+                (false, false, rh, ra)
+            };
 
             let h_changed = l_h || r_h;
-            let a_changed = l_a || r_a;
 
+            // Recompute hash if either child hash changed
             if h_changed {
                 *hash = nonleaf_hash(left.hash(), right.hash());
             }
+
+            // Recompute accumulator whenever children's accumulators may have changed
+            // or when structure/hash changed; compute new acc and compare to detect change.
+            let mut acc_proj = left.acc().into_projective();
+            acc_proj.add_assign_mixed(&right.acc());
+            let new_acc = acc_proj.into_affine();
+            let a_changed = new_acc != *acc;
             if a_changed {
-                let mut acc_proj = left.acc().into_projective();
-                acc_proj.add_assign_mixed(&right.acc());
-                *acc = acc_proj.into_affine();
+                *acc = new_acc;
             }
+
             (h_changed, a_changed)
         }
     }
