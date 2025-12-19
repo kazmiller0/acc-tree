@@ -68,21 +68,30 @@ impl Node {
         }
     }
 
-    pub fn collect_leaves_vec(&self) -> Vec<(String, String)> {
+    pub fn collect_leaves(
+        &self,
+        exclude_key: Option<&str>,
+    ) -> std::vec::IntoIter<(String, String)> {
+        let mut v: Vec<(String, String)> = Vec::new();
         match self {
-            Node::Leaf { key, fid, .. } => vec![(key.clone(), fid.clone())],
+            Node::Leaf { key, fid, .. } => {
+                if let Some(ex) = exclude_key {
+                    if ex == key.as_str() {
+                        return v.into_iter();
+                    }
+                }
+                v.push((key.clone(), fid.clone()));
+            }
             Node::NonLeaf { left, right, .. } => {
-                let mut lv = left.collect_leaves_vec();
-                lv.extend(right.collect_leaves_vec());
-                lv
+                v.extend(left.collect_leaves(exclude_key));
+                v.extend(right.collect_leaves(exclude_key));
             }
         }
-    }
-
-    pub fn collect_leaves(&self, _level: Option<usize>) -> std::vec::IntoIter<(String, String)> {
-        self.collect_leaves_vec().into_iter()
+        v.into_iter()
     }
 }
+
+/* ---------------- recursive ops ---------------- */
 
 pub fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
     match node {
@@ -103,7 +112,8 @@ pub fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
     }
 }
 
-pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> (bool, bool) {
+/// return: hash_changed
+pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bool {
     match **node {
         Node::Leaf {
             ref mut fid,
@@ -112,49 +122,30 @@ pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -
         } => {
             if key == target_key {
                 *fid = new_fid.to_string();
-                return (true, false);
+                true // hash changed
+            } else {
+                false
             }
-            (false, false)
         }
         Node::NonLeaf {
             ref mut hash,
-            ref mut acc,
             ref mut left,
             ref mut right,
-            ref keys,
             ..
         } => {
-            if !keys.contains_key(target_key) {
-                return (false, false);
-            }
-
-            // Only recurse into the side that actually contains the key.
-            let (l_h, l_a, r_h, r_a) = if left.has_key(target_key) {
-                let (lh, la) = update_recursive(left, target_key, new_fid);
-                (lh, la, false, false)
+            if left.has_key(target_key) {
+                let h_changed = update_recursive(left, target_key, new_fid);
+                if h_changed {
+                    *hash = nonleaf_hash(left.hash(), right.hash());
+                }
+                h_changed
             } else {
-                let (rh, ra) = update_recursive(right, target_key, new_fid);
-                (false, false, rh, ra)
-            };
-
-            let h_changed = l_h || r_h;
-
-            // Recompute hash if either child hash changed
-            if h_changed {
-                *hash = nonleaf_hash(left.hash(), right.hash());
+                let h_changed = update_recursive(right, target_key, new_fid);
+                if h_changed {
+                    *hash = nonleaf_hash(left.hash(), right.hash());
+                }
+                h_changed
             }
-
-            // Recompute accumulator whenever children's accumulators may have changed
-            // or when structure/hash changed; compute new acc and compare to detect change.
-            let mut acc_proj = left.acc().into_projective();
-            acc_proj.add_assign_mixed(&right.acc());
-            let new_acc = acc_proj.into_affine();
-            let a_changed = new_acc != *acc;
-            if a_changed {
-                *acc = new_acc;
-            }
-
-            (h_changed, a_changed)
         }
     }
 }
@@ -165,28 +156,17 @@ pub fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> 
     }
 
     match *node {
-        Node::Leaf {
-            key,
-            fid,
-            acc,
-            level,
-        } => {
-            if key == target_key {
-                None
-            } else {
-                Some(Box::new(Node::Leaf {
-                    key,
-                    fid,
-                    acc,
-                    level,
-                }))
-            }
+        Node::Leaf { .. } => {
+            // If we reached a leaf here, `node.has_key(target_key)` was true,
+            // so this leaf must be the target and should be removed.
+            None
         }
         Node::NonLeaf {
             level, left, right, ..
         } => {
             let left_res = delete_recursive(left, target_key);
             let right_res = delete_recursive(right, target_key);
+
             match (left_res, right_res) {
                 (Some(l), Some(r)) => {
                     let mut acc_proj = l.acc().into_projective();
@@ -208,25 +188,27 @@ pub fn delete_recursive(node: Box<Node>, target_key: &str) -> Option<Box<Node>> 
     }
 }
 
-fn node_keys_from(node: &Box<Node>) -> MultiSet<String> {
-    match &**node {
+fn node_keys_from(node: &Node) -> MultiSet<String> {
+    match node {
         Node::Leaf { key, .. } => MultiSet::from_vec(vec![key.clone()]),
         Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
     }
 }
 
-fn merge_nodes(r_old: Box<Node>, curr: Box<Node>) -> Box<Node> {
-    let mut acc_proj = r_old.acc().into_projective();
-    acc_proj.add_assign_mixed(&curr.acc());
+fn merge_nodes(left: Box<Node>, right: Box<Node>) -> Box<Node> {
+    let mut acc_proj = left.acc().into_projective();
+    acc_proj.add_assign_mixed(&right.acc());
     Box::new(Node::NonLeaf {
-        hash: nonleaf_hash(r_old.hash(), curr.hash()),
-        keys: Rc::new(&node_keys_from(&r_old) + &node_keys_from(&curr)),
+        hash: nonleaf_hash(left.hash(), right.hash()),
+        keys: Rc::new(&node_keys_from(&left) + &node_keys_from(&right)),
         acc: acc_proj.into_affine(),
-        level: curr.level() + 1,
-        left: r_old,
-        right: curr,
+        level: right.level() + 1,
+        left,
+        right,
     })
 }
+
+/* ---------------- forest ---------------- */
 
 pub struct AccumulatorTree {
     pub roots: Vec<Box<Node>>,
@@ -237,30 +219,46 @@ impl AccumulatorTree {
         Self { roots: Vec::new() }
     }
 
-    pub fn insert(&mut self, key: String, fid: String) {
-        let leaf_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]));
-        let mut node = Box::new(Node::Leaf {
-            key,
-            fid,
-            acc: leaf_acc,
-            level: 0,
-        });
-        loop {
-            if let Some(idx) = self.roots.iter().position(|r| r.level() == node.level()) {
-                node = merge_nodes(self.roots.remove(idx), node);
+    fn normalize(&mut self) {
+        self.roots.sort_by_key(|n| n.level());
+        let mut i = 0;
+        while i + 1 < self.roots.len() {
+            if self.roots[i].level() == self.roots[i + 1].level() {
+                // remove left then right so `merge_nodes(left, right)` receives correct order
+                let l = self.roots.remove(i);
+                let r = self.roots.remove(i);
+                self.roots.insert(i, merge_nodes(l, r));
             } else {
-                self.roots.push(node);
-                self.roots.sort_by_key(|n| n.level());
-                break;
+                i += 1;
             }
         }
     }
 
+    pub fn insert(&mut self, key: String, fid: String) {
+        // If key already exists in the tree, perform an update instead of
+        // inserting a duplicate leaf to keep keys unique.
+        if self.get(&key).is_some() {
+            self.update(&key, fid);
+            return;
+        }
+
+        let leaf_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]));
+        self.roots.push(Box::new(Node::Leaf {
+            key,
+            fid,
+            acc: leaf_acc,
+            level: 0,
+        }));
+        self.normalize();
+    }
+
     pub fn get(&self, key: &str) -> Option<String> {
-        self.roots
-            .iter()
-            .find(|r| r.has_key(key))
-            .and_then(|r| get_recursive(r, key))
+        for r in &self.roots {
+            if let Some(v) = get_recursive(r, key) {
+                return Some(v);
+            }
+        }
+        None
     }
 
     pub fn update(&mut self, key: &str, new_fid: String) {
@@ -274,8 +272,8 @@ impl AccumulatorTree {
             let root = self.roots.remove(idx);
             if let Some(new_root) = delete_recursive(root, key) {
                 self.roots.push(new_root);
-                self.roots.sort_by_key(|n| n.level());
             }
+            self.normalize();
         }
     }
 }
