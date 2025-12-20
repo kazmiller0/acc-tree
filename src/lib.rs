@@ -400,6 +400,9 @@ impl AccumulatorTree {
     }
 }
 
+pub mod proof;
+pub use proof::*;
+
 pub mod utils;
 pub use utils::{print_tree, render_keys};
 
