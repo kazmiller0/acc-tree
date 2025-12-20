@@ -1,5 +1,4 @@
 use acc::{Acc, Accumulator, G1Affine, MultiSet};
-// ark_ec traits not needed here
 use sha2::{Digest, Sha256};
 use std::rc::Rc;
 
