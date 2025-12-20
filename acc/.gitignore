@@ -1,0 +1,43 @@
+# Rust/Cargo
+/target/
+**/target/
+# Ignore Cargo.lock for libraries (keep for applications if desired)
+Cargo.lock
+
+# Binaries and shared objects
+*.rlib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# macOS
+.DS_Store
+
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+
+# Editor temporary files
+*~
+*.swp
+*.swo
+*.tmp
+*.temp
+*.log
+
+# Node / Python / others
+node_modules/
+venv/
+.env
+
+# Build / distribution
+build/
+dist/
+coverage/
+doc/
+
+# Misc
+.cache/
+.DS_Store
