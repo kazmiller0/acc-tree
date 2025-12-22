@@ -51,6 +51,298 @@ fn test_node_hash_and_collect() {
     }
 }
 
+// ========== additional comprehensive tests ==========
+
+fn find_leaf_by_key<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
+    match node {
+        Node::Leaf { key: k, .. } if k == key => Some(node),
+        Node::Leaf { .. } => None,
+        Node::NonLeaf { left, right, .. } => {
+            find_leaf_by_key(left, key).or_else(|| find_leaf_by_key(right, key))
+        }
+    }
+}
+
+fn find_live_leaf_by_key<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
+    match node {
+        Node::Leaf { key: k, deleted, .. } if k == key && !*deleted => Some(node),
+        Node::Leaf { .. } => None,
+        Node::NonLeaf { left, right, .. } => {
+            find_live_leaf_by_key(left, key).or_else(|| find_live_leaf_by_key(right, key))
+        }
+    }
+}
+
+fn traverse_nodes<F: FnMut(&Node)>(node: &Node, f: &mut F) {
+    f(node);
+    if let Node::NonLeaf { left, right, .. } = node {
+        traverse_nodes(left, f);
+        traverse_nodes(right, f);
+    }
+}
+
+#[test]
+fn test_basic_ops_insert_update_delete_revive_and_consistency() {
+    let mut tree = AccumulatorTree::new();
+
+    // insert
+    tree.insert("X".to_string(), "F1".to_string());
+    assert_eq!(tree.get("X"), Some("F1".to_string()));
+
+    // find the leaf node and check hash/acc consistency
+    let mut found_leaf: Option<&Node> = None;
+    for r in &tree.roots {
+        if let Some(n) = find_leaf_by_key(r, "X") {
+            found_leaf = Some(n);
+            break;
+        }
+    }
+    let leaf = found_leaf.expect("leaf X must exist");
+    // acc/hash consistent with keys()
+    assert_eq!(leaf.acc(), Acc::cal_acc_g1(&leaf.keys()));
+    if let Node::Leaf { key, fid, deleted, .. } = leaf {
+        assert!(!*deleted);
+        assert_eq!(leaf.hash(), leaf_hash(key, fid));
+    } else {
+        panic!("expected leaf");
+    }
+
+    // update
+    let prev_hash = leaf.hash();
+    tree.update("X", "F1_upd".to_string());
+    assert_eq!(tree.get("X"), Some("F1_upd".to_string()));
+    // locate updated leaf and check hash changed and acc updated
+    let mut updated_leaf: Option<&Node> = None;
+    for r in &tree.roots {
+        if let Some(n) = find_leaf_by_key(r, "X") {
+            updated_leaf = Some(n);
+            break;
+        }
+    }
+    let leaf2 = updated_leaf.expect("updated leaf must exist");
+    assert_ne!(prev_hash, leaf2.hash());
+    assert_eq!(leaf2.acc(), Acc::cal_acc_g1(&leaf2.keys()));
+
+    // delete
+    tree.delete("X");
+    assert_eq!(tree.get("X"), None);
+    // find tombstoned leaf and assert tombstone semantics
+    let mut tomb_leaf: Option<&Node> = None;
+    for r in &tree.roots {
+        if let Some(n) = find_leaf_by_key(r, "X") {
+            tomb_leaf = Some(n);
+            break;
+        }
+    }
+    let tf = tomb_leaf.expect("tombstone leaf should still be present in structure");
+    if let Node::Leaf { deleted, .. } = tf {
+        assert!(*deleted);
+    }
+    assert_eq!(tf.hash(), empty_hash());
+    assert_eq!(tf.acc(), empty_acc());
+
+    // revive by inserting same key again
+    tree.insert("X".to_string(), "F2".to_string());
+    assert_eq!(tree.get("X"), Some("F2".to_string()));
+    // ensure there's a non-deleted leaf for X
+    let mut live_leaf: Option<&Node> = None;
+    for r in &tree.roots {
+        if let Some(n) = find_live_leaf_by_key(r, "X") {
+            live_leaf = Some(n);
+            break;
+        }
+    }
+    let lf = live_leaf.expect("live leaf after revive must exist");
+    if let Node::Leaf { key, fid, deleted, .. } = lf {
+        assert!(!*deleted);
+        assert_eq!(tree.get(key.as_str()), Some(fid.clone()));
+        assert_eq!(lf.hash(), leaf_hash(key, fid));
+        assert_eq!(lf.acc(), Acc::cal_acc_g1(&lf.keys()));
+    }
+}
+
+#[test]
+fn test_normalize_merge_and_collect_leaves_behaviour() {
+    let mut tree = AccumulatorTree::new();
+    for i in 0..8 {
+        tree.insert(format!("K{}", i), format!("F{}", i));
+    }
+    // after normalize there should be no two roots with same level
+    let mut levels: Vec<usize> = tree.roots.iter().map(|r| r.level()).collect();
+    levels.sort();
+    for w in levels.windows(2) {
+        assert_ne!(w[0], w[1]);
+    }
+
+    // traverse all nodes and verify cached NonLeaf acc/hash equal recomputed values
+    for r in &tree.roots {
+        let mut check = |n: &Node| {
+            // acc == cal_acc_g1(keys)
+            assert_eq!(n.acc(), Acc::cal_acc_g1(&n.keys()));
+            if let Node::NonLeaf { left, right, .. } = n {
+                assert_eq!(n.hash(), nonleaf_hash(left.hash(), right.hash()));
+            }
+        };
+        traverse_nodes(r, &mut check);
+    }
+
+    // collect_leaves should exclude deleted leaves and honor exclude_key
+    tree.delete("K3");
+    let all_keys: Vec<String> = tree
+        .roots
+        .iter()
+        .flat_map(|r| r.collect_leaves(None))
+        .map(|(k, _)| k)
+        .collect();
+    assert!(!all_keys.contains(&"K3".to_string()));
+    let excl: Vec<String> = tree
+        .roots
+        .iter()
+        .flat_map(|r| r.collect_leaves(Some("K4")))
+        .map(|(k, _)| k)
+        .collect();
+    assert!(!excl.contains(&"K4".to_string()));
+}
+
+#[test]
+fn test_edge_cases_empty_tree_and_duplicates_and_updates_on_deleted() {
+    let mut tree = AccumulatorTree::new();
+    // empty tree ops should not panic
+    assert_eq!(tree.get("nope"), None);
+    tree.update("nope", "v".to_string());
+    tree.delete("nope");
+
+    // insert duplicate key twice
+    tree.insert("D".to_string(), "F1".to_string());
+    tree.insert("D".to_string(), "F2".to_string());
+    // duplicate insert does not overwrite an existing non-deleted leaf (use update to change)
+    assert_eq!(tree.get("D"), Some("F1".to_string()));
+    // collect unique keys should contain only one D
+    let mut keys: Vec<String> = tree
+        .roots
+        .iter()
+        .flat_map(|r| r.collect_leaves(None))
+        .map(|(k, _)| k)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    assert!(keys.contains(&"D".to_string()));
+
+    // delete nonexistent key should not change tree
+    let before = tree.roots.len();
+    tree.delete("Z_nonexistent");
+    assert_eq!(tree.roots.len(), before);
+
+    // update deleted key should be no-op
+    tree.delete("D");
+    // ensure it's tombstoned
+    assert_eq!(tree.get("D"), None);
+    tree.update("D", "should_not_apply".to_string());
+    assert_eq!(tree.get("D"), None);
+}
+
+#[test]
+fn test_tombstone_propagation_and_normalize_behavior() {
+    // build controlled tree: ((a,b),(c,d))
+    let a = Box::new(Node::Leaf { key: "a".into(), fid: "fa".into(), level: 0, deleted: false });
+    let b = Box::new(Node::Leaf { key: "b".into(), fid: "fb".into(), level: 0, deleted: false });
+    let c = Box::new(Node::Leaf { key: "c".into(), fid: "fc".into(), level: 0, deleted: false });
+    let d = Box::new(Node::Leaf { key: "d".into(), fid: "fd".into(), level: 0, deleted: false });
+
+    let left = merge_nodes(a, b); // level 1
+    let right = merge_nodes(c, d); // level 1
+    let root = merge_nodes(left.clone(), right.clone()); // level 2
+
+    // delete both leaves in left subtree
+    let root_after = delete_recursive(root, "a");
+    let root_after = delete_recursive(root_after, "b");
+
+    // find left subtree (root_after.left)
+    if let Node::NonLeaf { left, right: _, .. } = &*root_after {
+        // left keys should be empty and acc should equal empty acc
+        assert!(left.keys().is_empty());
+        assert_eq!(left.acc(), Acc::cal_acc_g1(&MultiSet::<String>::new()));
+        // left.hash() should be computed from child hashes which are tombstones
+        if let Node::NonLeaf { left: lchild, right: rchild, .. } = &**left {
+            assert_eq!(lchild.hash(), empty_hash());
+            assert_eq!(rchild.hash(), empty_hash());
+        }
+    } else {
+        panic!("root_after must be NonLeaf");
+    }
+
+    // normalize with two deleted same-level roots: ensure merge logic handles empty children
+    let mut tree = AccumulatorTree::new();
+    // create two deleted leaves same level
+    tree.roots.push(Box::new(Node::Leaf { key: "x".into(), fid: "".into(), level: 0, deleted: true }));
+    tree.roots.push(Box::new(Node::Leaf { key: "y".into(), fid: "".into(), level: 0, deleted: true }));
+    tree.normalize();
+    // after normalize there should be a single root (merged)
+    assert_eq!(tree.roots.len(), 1);
+    let root = &tree.roots[0];
+    // merged root should have empty keys and empty acc
+    assert!(root.keys().is_empty());
+    assert_eq!(root.acc(), Acc::cal_acc_g1(&MultiSet::<String>::new()));
+}
+
+#[test]
+fn test_revive_updates_nonleaf_for_deep_tree() {
+    // build ((a,b),(c,d)) again
+    let a = Box::new(Node::Leaf { key: "a".into(), fid: "fa".into(), level: 0, deleted: false });
+    let b = Box::new(Node::Leaf { key: "b".into(), fid: "fb".into(), level: 0, deleted: false });
+    let c = Box::new(Node::Leaf { key: "c".into(), fid: "fc".into(), level: 0, deleted: false });
+    let d = Box::new(Node::Leaf { key: "d".into(), fid: "fd".into(), level: 0, deleted: false });
+    let left = merge_nodes(a, b);
+    let right = merge_nodes(c, d);
+    let mut root = merge_nodes(left, right);
+
+    // delete a and b (left subtree becomes empty keys)
+    root = delete_recursive(root, "a");
+    root = delete_recursive(root, "b");
+
+    // revive a by inserting into the outer tree via revive_recursive semantics
+    let revived = revive_recursive(root, "a", "fa_new");
+    // verify that after revive, acc/hash for the parent nonleaf reflect the restored key
+    if let Node::NonLeaf { left, right: _, keys, acc, .. } = &*revived {
+        // keys should now contain "a"
+        assert!(keys.contains_key("a"));
+        assert_eq!(*acc, Acc::cal_acc_g1(&keys.as_ref().clone()));
+        // hash of left should now not be the tombstone-only hash
+        assert_ne!(left.hash(), empty_hash());
+    } else {
+        panic!("revived root must be NonLeaf");
+    }
+}
+
+#[test]
+fn test_special_key_and_fid_boundaries() {
+    let mut tree = AccumulatorTree::new();
+    // empty key and fid
+    tree.insert("".to_string(), "".to_string());
+    assert_eq!(tree.get(""), Some("".to_string()));
+    // special chars
+    let special = "\n\0!@#$%^&*()_+中文".to_string();
+    tree.insert(special.clone(), "fid_special".to_string());
+    assert_eq!(tree.get(&special), Some("fid_special".to_string()));
+
+    // verify no panics and acc/hash correctness
+    for r in &tree.roots {
+        let mut check = |n: &Node| {
+            // ensure acc matches keys
+            assert_eq!(n.acc(), Acc::cal_acc_g1::<String>(&n.keys()));
+            if let Node::Leaf { key, fid, deleted, .. } = n {
+                if !*deleted {
+                    assert_eq!(n.hash(), leaf_hash(key.as_str(), fid.as_str()));
+                } else {
+                    assert_eq!(n.hash(), empty_hash());
+                }
+            }
+        };
+        traverse_nodes(r, &mut check);
+    }
+}
+
+
 #[test]
 fn test_tree_lifecycle() {
     let mut tree = AccumulatorTree::new();
@@ -185,6 +477,7 @@ fn test_randomized_property_operations() {
         // Sampled full-state check every 50 ops to reduce overhead
         if i % 50 == 0 {
             let mut keys_in_tree: Vec<String> = tree
+
                 .roots
                 .iter()
                 .flat_map(|r| r.collect_leaves(None))

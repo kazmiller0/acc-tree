@@ -1,8 +1,22 @@
 use acc::{Acc, Accumulator, G1Affine, MultiSet};
 use sha2::{Digest, Sha256};
 use std::rc::Rc;
+use lazy_static::lazy_static;
 
 pub type Hash = [u8; 32];
+
+lazy_static! {
+    pub static ref EMPTY_HASH: Hash = leaf_hash("", "");
+    pub static ref EMPTY_ACC: G1Affine = Acc::cal_acc_g1(&MultiSet::<String>::new());
+}
+
+pub fn empty_hash() -> Hash {
+    *EMPTY_HASH
+}
+
+pub fn empty_acc() -> G1Affine {
+    *EMPTY_ACC
+}
 
 pub fn leaf_hash(key: &str, fid: &str) -> Hash {
     let mut hasher = Sha256::new();
@@ -53,7 +67,7 @@ impl Node {
             } => {
                 if *deleted {
                     // tombstoned leaf contributes an empty hash
-                    leaf_hash("", "")
+                    empty_hash()
                 } else {
                     leaf_hash(key, fid)
                 }
@@ -67,7 +81,7 @@ impl Node {
             Node::Leaf { key, deleted, .. } => {
                 if *deleted {
                     // empty multiset accumulator
-                    Acc::cal_acc_g1(&MultiSet::<String>::new())
+                    empty_acc()
                 } else {
                     Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]))
                 }
@@ -128,8 +142,8 @@ impl Node {
 
 pub fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
     match node {
-        Node::Leaf { key, fid, .. } => {
-            if key == target_key {
+        Node::Leaf { key, fid, deleted, .. } => {
+            if key == target_key && !*deleted {
                 Some(fid.clone())
             } else {
                 None
