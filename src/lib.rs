@@ -157,7 +157,8 @@ pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -
             ref mut acc,
             ..
         } => {
-            let changed = if left.has_key(target_key) || contains_any(left, target_key) {
+            // locate branch using `has_key` only (leaf obeys tombstone)
+            let changed = if left.has_key(target_key) {
                 update_recursive(left, target_key, new_fid)
             } else {
                 update_recursive(right, target_key, new_fid)
@@ -244,15 +245,6 @@ fn node_keys_from(node: &Node) -> MultiSet<String> {
             }
         }
         Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
-    }
-}
-
-fn contains_any(node: &Node, target_key: &str) -> bool {
-    match node {
-        Node::Leaf { key, .. } => key == target_key,
-        Node::NonLeaf { left, right, .. } => {
-            contains_any(left, target_key) || contains_any(right, target_key)
-        }
     }
 }
 
@@ -355,8 +347,8 @@ impl AccumulatorTree {
     }
 
     pub fn insert(&mut self, key: String, fid: String) {
-        // If there's an existing (possibly tombstoned) leaf for `key`, try to revive it.
-        if let Some(idx) = self.roots.iter().position(|r| contains_any(r, &key)) {
+        // If there's an existing leaf for `key`, try to revive it (use `has_key`).
+        if let Some(idx) = self.roots.iter().position(|r| r.has_key(&key)) {
             let root = self.roots.remove(idx);
             let revived = revive_recursive(root, &key, &fid);
             self.roots.push(revived);
@@ -391,7 +383,7 @@ impl AccumulatorTree {
     }
 
     pub fn delete(&mut self, key: &str) {
-        if let Some(idx) = self.roots.iter().position(|r| contains_any(r, key)) {
+        if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
             let root = self.roots.remove(idx);
             let new_root = delete_recursive(root, key);
             self.roots.push(new_root);
