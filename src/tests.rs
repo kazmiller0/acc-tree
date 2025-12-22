@@ -2,19 +2,15 @@ use super::*;
 
 #[test]
 fn test_node_hash_and_collect() {
-    let l_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec!["A".to_string()]));
-    let r_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec!["B".to_string()]));
     let l = Box::new(Node::Leaf {
         key: "A".into(),
         fid: "fa".into(),
-        acc: l_acc,
         level: 0,
         deleted: false,
     });
     let r = Box::new(Node::Leaf {
         key: "B".into(),
         fid: "fb".into(),
-        acc: r_acc,
         level: 0,
         deleted: false,
     });

@@ -25,7 +25,6 @@ pub enum Node {
     Leaf {
         key: String,
         fid: String,
-        acc: G1Affine,
         level: usize,
         deleted: bool,
     },
@@ -65,15 +64,28 @@ impl Node {
 
     pub fn acc(&self) -> G1Affine {
         match self {
-            Node::Leaf { acc, deleted, .. } => {
+            Node::Leaf { key, deleted, .. } => {
                 if *deleted {
                     // empty multiset accumulator
                     Acc::cal_acc_g1(&MultiSet::<String>::new())
                 } else {
-                    *acc
+                    Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]))
                 }
             }
             Node::NonLeaf { acc, .. } => *acc,
+        }
+    }
+
+    pub fn keys(&self) -> MultiSet<String> {
+        match self {
+            Node::Leaf { key, deleted, .. } => {
+                if *deleted {
+                    MultiSet::new()
+                } else {
+                    MultiSet::from_vec(vec![key.clone()])
+                }
+            }
+            Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
         }
     }
 
@@ -180,31 +192,22 @@ pub fn delete_recursive(node: Box<Node>, target_key: &str) -> Box<Node> {
         Node::Leaf {
             key,
             fid,
-            acc: _,
             level,
             deleted,
         } => {
             if key == target_key && !deleted {
-                // mark tombstone and clear accumulator
-                let empty_acc = Acc::cal_acc_g1(&MultiSet::<String>::new());
+                // mark tombstone
                 Box::new(Node::Leaf {
                     key,
                     fid,
-                    acc: empty_acc,
                     level,
                     deleted: true,
                 })
             } else {
-                // compute acc before moving `key`
-                let leaf_acc = if deleted {
-                    Acc::cal_acc_g1(&MultiSet::<String>::new())
-                } else {
-                    Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]))
-                };
+                // preserve leaf state (no accumulator stored on Leaf)
                 Box::new(Node::Leaf {
                     key,
                     fid,
-                    acc: leaf_acc,
                     level,
                     deleted,
                 })
@@ -236,16 +239,7 @@ pub fn delete_recursive(node: Box<Node>, target_key: &str) -> Box<Node> {
 }
 
 fn node_keys_from(node: &Node) -> MultiSet<String> {
-    match node {
-        Node::Leaf { key, deleted, .. } => {
-            if *deleted {
-                MultiSet::new()
-            } else {
-                MultiSet::from_vec(vec![key.clone()])
-            }
-        }
-        Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
-    }
+    node.keys()
 }
 
 fn revive_recursive(node: Box<Node>, target_key: &str, new_fid: &str) -> Box<Node> {
@@ -253,30 +247,21 @@ fn revive_recursive(node: Box<Node>, target_key: &str, new_fid: &str) -> Box<Nod
         Node::Leaf {
             key,
             fid,
-            acc: _,
             level,
             deleted,
         } => {
             if key == target_key && deleted {
-                let leaf_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]));
                 Box::new(Node::Leaf {
                     key,
                     fid: new_fid.to_string(),
-                    acc: leaf_acc,
                     level,
                     deleted: false,
                 })
             } else {
                 // preserve as-is; ensure acc is correct for deleted/non-deleted leaf
-                let leaf_acc = if deleted {
-                    Acc::cal_acc_g1(&MultiSet::<String>::new())
-                } else {
-                    Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]))
-                };
                 Box::new(Node::Leaf {
                     key,
                     fid,
-                    acc: leaf_acc,
                     level,
                     deleted,
                 })
@@ -333,17 +318,23 @@ impl AccumulatorTree {
 
     fn normalize(&mut self) {
         self.roots.sort_by_key(|n| n.level());
-        let mut i = 0;
-        while i + 1 < self.roots.len() {
-            if self.roots[i].level() == self.roots[i + 1].level() {
-                // remove left then right so `merge_nodes(left, right)` receives correct order
-                let l = self.roots.remove(i);
-                let r = self.roots.remove(i);
-                self.roots.insert(i, merge_nodes(l, r));
-            } else {
-                i += 1;
+
+        let mut stack: Vec<Box<Node>> = Vec::new();
+
+        for node in self.roots.drain(..) {
+            let mut cur = node;
+            while let Some(top) = stack.last() {
+                if top.level() == cur.level() {
+                    let left = stack.pop().unwrap();
+                    cur = merge_nodes(left, cur);
+                } else {
+                    break;
+                }
             }
+            stack.push(cur);
         }
+
+        self.roots = stack;
     }
 
     pub fn insert(&mut self, key: String, fid: String) {
@@ -356,11 +347,9 @@ impl AccumulatorTree {
             return;
         }
 
-        let leaf_acc = Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]));
         self.roots.push(Box::new(Node::Leaf {
             key,
             fid,
-            acc: leaf_acc,
             level: 0,
             deleted: false,
         }));
