@@ -655,6 +655,29 @@ fn test_update_with_proof() {
 }
 
 #[test]
+fn test_delete_with_proof() {
+    let mut tree = AccumulatorTree::new();
+    tree.insert("Dkey".to_string(), "Dfid".to_string());
+
+    // delete with proof
+    let resp = tree
+        .delete_with_proof("Dkey")
+        .expect("delete_with_proof should succeed");
+
+    // old fid recorded
+    assert_eq!(resp.old_fid, Some("Dfid".to_string()));
+
+    // post proof verifies (tombstone leaf hash -> empty_hash)
+    assert!(resp.post_proof.verify());
+
+    // verify convenience
+    assert!(resp.verify_delete());
+
+    // ensure key is gone
+    assert_eq!(tree.get("Dkey"), None);
+}
+
+#[test]
 fn test_get_with_nonmembership_when_absent() {
     let tree = AccumulatorTree::new();
     // empty tree: key absent

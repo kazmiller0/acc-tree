@@ -288,6 +288,94 @@ impl UpdateResponse {
         true
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct DeleteResponse {
+    /// key deleted
+    pub key: String,
+    /// fid before deletion
+    pub old_fid: Option<String>,
+    /// membership proof for the leaf before deletion
+    pub pre_proof: Option<Proof>,
+    /// accumulator value before deletion (for the root containing the key)
+    pub pre_acc: Option<G1Affine>,
+    /// accumulator witness for the old element
+    pub pre_acc_witness: Option<G1Affine>,
+    /// merkle/path proof for the tombstoned leaf after deletion (leaf hash will be empty_hash)
+    pub post_proof: Proof,
+    /// accumulator value after deletion for the root containing the tombstone
+    pub post_acc: G1Affine,
+    /// root hash before deletion (if available)
+    pub pre_root_hash: Option<Hash>,
+    /// root hash after deletion
+    pub post_root_hash: Hash,
+}
+
+impl DeleteResponse {
+    pub fn new(
+        key: String,
+        old_fid: Option<String>,
+        pre_proof: Option<Proof>,
+        pre_acc: Option<G1Affine>,
+        pre_acc_witness: Option<G1Affine>,
+        post_proof: Proof,
+        post_acc: G1Affine,
+        pre_root_hash: Option<Hash>,
+        post_root_hash: Hash,
+    ) -> Self {
+        Self {
+            key,
+            old_fid,
+            pre_proof,
+            pre_acc,
+            pre_acc_witness,
+            post_proof,
+            post_acc,
+            pre_root_hash,
+            post_root_hash,
+        }
+    }
+
+    /// Verify deletion: pre/post proofs validate and sibling paths match (only leaf changed),
+    /// and pre-acc membership holds for the deleted key when provided.
+    pub fn verify_delete(&self) -> bool {
+        // verify pre proof if present
+        if let Some(pre_p) = &self.pre_proof {
+            if !pre_p.verify() {
+                return false;
+            }
+        }
+
+        // verify post proof
+        if !self.post_proof.verify() {
+            return false;
+        }
+
+        // sibling paths should match between pre and post
+        if let Some(pre_p) = &self.pre_proof {
+            if pre_p.path.len() != self.post_proof.path.len() {
+                return false;
+            }
+            for (i, (psib, pleft)) in pre_p.path.iter().enumerate() {
+                let (qsib, qleft) = &self.post_proof.path[i];
+                if psib != qsib || pleft != qleft {
+                    return false;
+                }
+            }
+        }
+
+        // verify accumulator membership for pre-state (old element)
+        if let (Some(acc), Some(w)) = (&self.pre_acc, &self.pre_acc_witness) {
+            if let Some(_old) = &self.old_fid {
+                if !acc::Acc::verify_membership(acc, w, &self.key) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+}
 // use acc::G1Affine;
 
 // pub struct QueryResponse {

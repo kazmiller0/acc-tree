@@ -200,6 +200,38 @@ fn get_proof_recursive(
     }
 }
 
+/// Build a proof for `target_key` including leaves that may be tombstoned.
+/// This searches the tree for a leaf with matching key regardless of tombstone
+/// and records sibling hashes on unwind.
+fn get_proof_including_deleted(
+    node: &Node,
+    target_key: &str,
+    path: &mut Vec<(Hash, bool)>,
+) -> Option<String> {
+    match node {
+        Node::Leaf { key, fid, .. } => {
+            if key == target_key {
+                Some(fid.clone())
+            } else {
+                None
+            }
+        }
+        Node::NonLeaf { left, right, .. } => {
+            if let Some(fid) = get_proof_including_deleted(left, target_key, path) {
+                // sibling is right child
+                path.push((right.hash(), false));
+                return Some(fid);
+            }
+            if let Some(fid) = get_proof_including_deleted(right, target_key, path) {
+                // sibling is left child
+                path.push((left.hash(), true));
+                return Some(fid);
+            }
+            None
+        }
+    }
+}
+
 /// Find predecessor (max key < target) and successor (min key > target) within `node`.
 /// Returns (found_exact, pred_opt, succ_opt)
 fn find_pred_succ(
@@ -665,6 +697,55 @@ impl AccumulatorTree {
             self.roots.push(new_root);
             self.normalize();
         }
+    }
+
+    /// Delete with proof: returns a `DeleteResponse` capturing pre/post proofs
+    /// so a verifier can confirm the key was tombstoned and the tree integrity
+    /// (path siblings) was preserved.
+    pub fn delete_with_proof(
+        &mut self,
+        key: &str,
+    ) -> Result<crate::proof::DeleteResponse, String> {
+        // capture pre-state proof (must exist)
+        let pre_qr = self.get_with_proof(key);
+        let old_fid = pre_qr.fid.clone();
+        if old_fid.is_none() {
+            return Err(format!("key '{}' not found for delete", key));
+        }
+        let pre_proof = pre_qr.proof;
+        let pre_acc = pre_qr.acc;
+        let pre_acc_witness = pre_qr.acc_witness;
+        let pre_root_hash = pre_qr.root_hash;
+
+        // perform deletion
+        self.delete(key);
+
+        // find post-state proof including tombstoned leaf
+        for r in self.roots.iter() {
+            let mut path: Vec<(Hash, bool)> = Vec::new();
+            if let Some(_fid) = get_proof_including_deleted(r.as_ref(), key, &mut path) {
+                let root_h = r.hash();
+                // after deletion the leaf's hash should be empty_hash()
+                let leaf_h = empty_hash();
+                let post_proof = crate::proof::Proof::new(root_h, leaf_h, path);
+                let post_acc = r.acc();
+                let post_root_hash = root_h;
+                return Ok(crate::proof::DeleteResponse::new(
+                    key.to_string(),
+                    old_fid,
+                    pre_proof,
+                    pre_acc,
+                    pre_acc_witness,
+                    post_proof,
+                    post_acc,
+                    pre_root_hash,
+                    post_root_hash,
+                ));
+            }
+        }
+
+        // If we reach here, the deleted leaf is not present as a tombstone (unexpected)
+        Err("post-delete tombstone not found".to_string())
     }
 }
 
