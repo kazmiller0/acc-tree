@@ -1,7 +1,7 @@
 use acc::{Acc, Accumulator, G1Affine, MultiSet};
+use lazy_static::lazy_static;
 use sha2::{Digest, Sha256};
 use std::rc::Rc;
-use lazy_static::lazy_static;
 
 pub type Hash = [u8; 32];
 
@@ -142,7 +142,9 @@ impl Node {
 
 pub fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
     match node {
-        Node::Leaf { key, fid, deleted, .. } => {
+        Node::Leaf {
+            key, fid, deleted, ..
+        } => {
             if key == target_key && !*deleted {
                 Some(fid.clone())
             } else {
@@ -154,6 +156,45 @@ pub fn get_recursive(node: &Node, target_key: &str) -> Option<String> {
                 get_recursive(left, target_key)
             } else {
                 get_recursive(right, target_key)
+            }
+        }
+    }
+}
+
+/// Build a path-proof for `target_key` within `node`.
+/// `path` is populated with sibling hashes on unwind; each entry is (sibling_hash, sibling_is_left).
+fn get_proof_recursive(
+    node: &Node,
+    target_key: &str,
+    path: &mut Vec<(Hash, bool)>,
+) -> Option<String> {
+    match node {
+        Node::Leaf {
+            key, fid, deleted, ..
+        } => {
+            if key == target_key && !*deleted {
+                Some(fid.clone())
+            } else {
+                None
+            }
+        }
+        Node::NonLeaf { left, right, .. } => {
+            if left.has_key(target_key) {
+                if let Some(fid) = get_proof_recursive(left, target_key, path) {
+                    // sibling is right child
+                    path.push((right.hash(), false));
+                    return Some(fid);
+                }
+                None
+            } else if right.has_key(target_key) {
+                if let Some(fid) = get_proof_recursive(right, target_key, path) {
+                    // sibling is left child
+                    path.push((left.hash(), true));
+                    return Some(fid);
+                }
+                None
+            } else {
+                None
             }
         }
     }
@@ -377,6 +418,30 @@ impl AccumulatorTree {
             }
         }
         None
+    }
+
+    /// Return the query result together with a proof that the leaf belongs
+    /// to the subtree rooted at the returned root hash.
+    pub fn get_with_proof(&self, key: &str) -> crate::proof::QueryResponse {
+        for r in &self.roots {
+            let mut path: Vec<(Hash, bool)> = Vec::new();
+            if let Some(fid) = get_proof_recursive(r, key, &mut path) {
+                let leaf_h = leaf_hash(key, &fid);
+                let root_h = r.hash();
+                let proof = crate::proof::Proof::new(root_h, leaf_h, path);
+                // create accumulator membership witness for the key
+                let acc_val = r.acc();
+                let acc_witness = acc::Acc::create_witness(&acc_val, &key.to_string());
+                return crate::proof::QueryResponse::new(
+                    Some(fid),
+                    Some(proof),
+                    Some(root_h),
+                    Some(acc_val),
+                    Some(acc_witness),
+                );
+            }
+        }
+        crate::proof::QueryResponse::new(None, None, None, None, None)
     }
 
     pub fn update(&mut self, key: &str, new_fid: String) {

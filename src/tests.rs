@@ -65,7 +65,9 @@ fn find_leaf_by_key<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
 
 fn find_live_leaf_by_key<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
     match node {
-        Node::Leaf { key: k, deleted, .. } if k == key && !*deleted => Some(node),
+        Node::Leaf {
+            key: k, deleted, ..
+        } if k == key && !*deleted => Some(node),
         Node::Leaf { .. } => None,
         Node::NonLeaf { left, right, .. } => {
             find_live_leaf_by_key(left, key).or_else(|| find_live_leaf_by_key(right, key))
@@ -100,7 +102,10 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
     let leaf = found_leaf.expect("leaf X must exist");
     // acc/hash consistent with keys()
     assert_eq!(leaf.acc(), Acc::cal_acc_g1(&leaf.keys()));
-    if let Node::Leaf { key, fid, deleted, .. } = leaf {
+    if let Node::Leaf {
+        key, fid, deleted, ..
+    } = leaf
+    {
         assert!(!*deleted);
         assert_eq!(leaf.hash(), leaf_hash(key, fid));
     } else {
@@ -153,7 +158,10 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
         }
     }
     let lf = live_leaf.expect("live leaf after revive must exist");
-    if let Node::Leaf { key, fid, deleted, .. } = lf {
+    if let Node::Leaf {
+        key, fid, deleted, ..
+    } = lf
+    {
         assert!(!*deleted);
         assert_eq!(tree.get(key.as_str()), Some(fid.clone()));
         assert_eq!(lf.hash(), leaf_hash(key, fid));
@@ -244,10 +252,30 @@ fn test_edge_cases_empty_tree_and_duplicates_and_updates_on_deleted() {
 #[test]
 fn test_tombstone_propagation_and_normalize_behavior() {
     // build controlled tree: ((a,b),(c,d))
-    let a = Box::new(Node::Leaf { key: "a".into(), fid: "fa".into(), level: 0, deleted: false });
-    let b = Box::new(Node::Leaf { key: "b".into(), fid: "fb".into(), level: 0, deleted: false });
-    let c = Box::new(Node::Leaf { key: "c".into(), fid: "fc".into(), level: 0, deleted: false });
-    let d = Box::new(Node::Leaf { key: "d".into(), fid: "fd".into(), level: 0, deleted: false });
+    let a = Box::new(Node::Leaf {
+        key: "a".into(),
+        fid: "fa".into(),
+        level: 0,
+        deleted: false,
+    });
+    let b = Box::new(Node::Leaf {
+        key: "b".into(),
+        fid: "fb".into(),
+        level: 0,
+        deleted: false,
+    });
+    let c = Box::new(Node::Leaf {
+        key: "c".into(),
+        fid: "fc".into(),
+        level: 0,
+        deleted: false,
+    });
+    let d = Box::new(Node::Leaf {
+        key: "d".into(),
+        fid: "fd".into(),
+        level: 0,
+        deleted: false,
+    });
 
     let left = merge_nodes(a, b); // level 1
     let right = merge_nodes(c, d); // level 1
@@ -263,7 +291,12 @@ fn test_tombstone_propagation_and_normalize_behavior() {
         assert!(left.keys().is_empty());
         assert_eq!(left.acc(), Acc::cal_acc_g1(&MultiSet::<String>::new()));
         // left.hash() should be computed from child hashes which are tombstones
-        if let Node::NonLeaf { left: lchild, right: rchild, .. } = &**left {
+        if let Node::NonLeaf {
+            left: lchild,
+            right: rchild,
+            ..
+        } = &**left
+        {
             assert_eq!(lchild.hash(), empty_hash());
             assert_eq!(rchild.hash(), empty_hash());
         }
@@ -274,8 +307,18 @@ fn test_tombstone_propagation_and_normalize_behavior() {
     // normalize with two deleted same-level roots: ensure merge logic handles empty children
     let mut tree = AccumulatorTree::new();
     // create two deleted leaves same level
-    tree.roots.push(Box::new(Node::Leaf { key: "x".into(), fid: "".into(), level: 0, deleted: true }));
-    tree.roots.push(Box::new(Node::Leaf { key: "y".into(), fid: "".into(), level: 0, deleted: true }));
+    tree.roots.push(Box::new(Node::Leaf {
+        key: "x".into(),
+        fid: "".into(),
+        level: 0,
+        deleted: true,
+    }));
+    tree.roots.push(Box::new(Node::Leaf {
+        key: "y".into(),
+        fid: "".into(),
+        level: 0,
+        deleted: true,
+    }));
     tree.normalize();
     // after normalize there should be a single root (merged)
     assert_eq!(tree.roots.len(), 1);
@@ -288,10 +331,30 @@ fn test_tombstone_propagation_and_normalize_behavior() {
 #[test]
 fn test_revive_updates_nonleaf_for_deep_tree() {
     // build ((a,b),(c,d)) again
-    let a = Box::new(Node::Leaf { key: "a".into(), fid: "fa".into(), level: 0, deleted: false });
-    let b = Box::new(Node::Leaf { key: "b".into(), fid: "fb".into(), level: 0, deleted: false });
-    let c = Box::new(Node::Leaf { key: "c".into(), fid: "fc".into(), level: 0, deleted: false });
-    let d = Box::new(Node::Leaf { key: "d".into(), fid: "fd".into(), level: 0, deleted: false });
+    let a = Box::new(Node::Leaf {
+        key: "a".into(),
+        fid: "fa".into(),
+        level: 0,
+        deleted: false,
+    });
+    let b = Box::new(Node::Leaf {
+        key: "b".into(),
+        fid: "fb".into(),
+        level: 0,
+        deleted: false,
+    });
+    let c = Box::new(Node::Leaf {
+        key: "c".into(),
+        fid: "fc".into(),
+        level: 0,
+        deleted: false,
+    });
+    let d = Box::new(Node::Leaf {
+        key: "d".into(),
+        fid: "fd".into(),
+        level: 0,
+        deleted: false,
+    });
     let left = merge_nodes(a, b);
     let right = merge_nodes(c, d);
     let mut root = merge_nodes(left, right);
@@ -303,7 +366,14 @@ fn test_revive_updates_nonleaf_for_deep_tree() {
     // revive a by inserting into the outer tree via revive_recursive semantics
     let revived = revive_recursive(root, "a", "fa_new");
     // verify that after revive, acc/hash for the parent nonleaf reflect the restored key
-    if let Node::NonLeaf { left, right: _, keys, acc, .. } = &*revived {
+    if let Node::NonLeaf {
+        left,
+        right: _,
+        keys,
+        acc,
+        ..
+    } = &*revived
+    {
         // keys should now contain "a"
         assert!(keys.contains_key("a"));
         assert_eq!(*acc, Acc::cal_acc_g1(&keys.as_ref().clone()));
@@ -330,7 +400,10 @@ fn test_special_key_and_fid_boundaries() {
         let mut check = |n: &Node| {
             // ensure acc matches keys
             assert_eq!(n.acc(), Acc::cal_acc_g1::<String>(&n.keys()));
-            if let Node::Leaf { key, fid, deleted, .. } = n {
+            if let Node::Leaf {
+                key, fid, deleted, ..
+            } = n
+            {
                 if !*deleted {
                     assert_eq!(n.hash(), leaf_hash(key.as_str(), fid.as_str()));
                 } else {
@@ -341,7 +414,6 @@ fn test_special_key_and_fid_boundaries() {
         traverse_nodes(r, &mut check);
     }
 }
-
 
 #[test]
 fn test_tree_lifecycle() {
@@ -477,7 +549,6 @@ fn test_randomized_property_operations() {
         // Sampled full-state check every 50 ops to reduce overhead
         if i % 50 == 0 {
             let mut keys_in_tree: Vec<String> = tree
-
                 .roots
                 .iter()
                 .flat_map(|r| r.collect_leaves(None))
@@ -526,4 +597,28 @@ fn test_randomized_property_operations() {
                 .join("\n")
         );
     }
+}
+
+#[test]
+fn test_get_with_proof_verifies() {
+    let mut tree = AccumulatorTree::new();
+    tree.insert("P".to_string(), "PV".to_string());
+
+    let qr = tree.get_with_proof("P");
+    assert_eq!(qr.fid, Some("PV".to_string()));
+    let proof = qr.proof.as_ref().expect("proof must be present");
+    // verify the proof recomputes the root correctly
+    assert!(proof.verify());
+    // also verify with key/fid convenience
+    assert!(crate::proof::Proof::verify_with_kv(proof.root_hash, "P", "PV", proof.path.clone()));
+
+    // ensure QueryResponse populated root_hash and acc_witness/acc
+    assert_eq!(qr.root_hash, Some(proof.root_hash));
+    let acc_val = qr.acc.expect("acc must be present");
+    let witness = qr.acc_witness.expect("witness must be present");
+    // verify accumulator membership witness
+    assert!(acc::Acc::verify_membership(&acc_val, &witness, &"P".to_string()));
+
+    // combined verification convenience
+    assert!(qr.verify_full("P", "PV"));
 }
