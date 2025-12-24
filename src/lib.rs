@@ -702,10 +702,7 @@ impl AccumulatorTree {
     /// Delete with proof: returns a `DeleteResponse` capturing pre/post proofs
     /// so a verifier can confirm the key was tombstoned and the tree integrity
     /// (path siblings) was preserved.
-    pub fn delete_with_proof(
-        &mut self,
-        key: &str,
-    ) -> Result<crate::proof::DeleteResponse, String> {
+    pub fn delete_with_proof(&mut self, key: &str) -> Result<crate::proof::DeleteResponse, String> {
         // capture pre-state proof (must exist)
         let pre_qr = self.get_with_proof(key);
         let old_fid = pre_qr.fid.clone();

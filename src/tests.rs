@@ -494,6 +494,56 @@ fn test_bulk_kv_operations() {
     }
 }
 
+// Large-scale bulk ops for stress testing. Marked `ignore` so it doesn't
+// run in regular CI but can be executed locally with `cargo test -- --ignored`.
+#[test]
+#[ignore]
+fn test_bulk_kv_operations_large() {
+    let mut tree = AccumulatorTree::new();
+    let n: usize = 500; // reduced size for faster runs
+
+    // insert n key-value pairs
+    for i in 0..n {
+        tree.insert(format!("K{}", i), format!("F{}", i));
+    }
+
+    // verify basic gets for a sample to reduce runtime
+    for i in 0..n {
+        assert_eq!(tree.get(&format!("K{}", i)), Some(format!("F{}", i)));
+    }
+
+    // update every 10th entry
+    for i in (0..n).step_by(10) {
+        tree.update(&format!("K{}", i), format!("F{}_upd", i));
+    }
+    for i in (0..n).step_by(10) {
+        assert_eq!(tree.get(&format!("K{}", i)), Some(format!("F{}_upd", i)));
+    }
+
+    // delete every 7th entry
+    let mut deleted = 0usize;
+    for i in (0..n).step_by(7) {
+        tree.delete(&format!("K{}", i));
+        deleted += 1;
+    }
+
+    // collect keys from the tree and verify count
+    let mut keys: Vec<String> = tree
+        .roots
+        .iter()
+        .flat_map(|r| r.collect_leaves(None))
+        .map(|(k, _)| k)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), n - deleted);
+
+    // ensure deleted keys are gone
+    for i in (0..n).step_by(7) {
+        assert_eq!(tree.get(&format!("K{}", i)), None);
+    }
+}
+
 #[test]
 fn test_randomized_property_operations() {
     use std::collections::HashMap;
@@ -599,6 +649,112 @@ fn test_randomized_property_operations() {
     }
 }
 
+// Larger randomized property test for stress; ignored by default.
+#[test]
+#[ignore]
+fn test_randomized_property_operations_large() {
+    use std::collections::HashMap;
+
+    // deterministic simple LCG
+    let mut seed: u64 = 0xfeed_face_dead_beefu64;
+    fn lcg(s: &mut u64) -> u64 {
+        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *s
+    }
+
+    let mut tree = AccumulatorTree::new();
+    let mut reference: HashMap<String, String> = HashMap::new();
+
+    // Larger ops/key_space for stress testing
+    let ops = 1000usize; // reduced ops for speed
+    let key_space = 200usize; // smaller key space
+    let mut ops_log: Vec<String> = Vec::with_capacity(ops);
+
+    for i in 0..ops {
+        let r = lcg(&mut seed);
+        let op = (r % 3) as u8; // 0=insert,1=update,2=delete
+        let kidx = (lcg(&mut seed) as usize) % key_space;
+        let key = format!("K{}", kidx);
+
+        match op {
+            0 => {
+                let v = format!("F{}", (lcg(&mut seed) % 10000));
+                tree.insert(key.clone(), v.clone());
+                reference.insert(key.clone(), v);
+                ops_log.push(format!("insert {}", key));
+            }
+            1 => {
+                let v = format!("U{}", (lcg(&mut seed) % 10000));
+                if reference.contains_key(&key) {
+                    tree.update(&key, v.clone());
+                    reference.insert(key.clone(), v);
+                    ops_log.push(format!("update {}", key));
+                } else {
+                    tree.insert(key.clone(), v.clone());
+                    reference.insert(key.clone(), v);
+                    ops_log.push(format!("insert {} (via update)", key));
+                }
+            }
+            _ => {
+                tree.delete(&key);
+                reference.remove(&key);
+                ops_log.push(format!("delete {}", key));
+            }
+        }
+
+        // Sampled check every 500 ops to reduce overhead
+        if i % 500 == 0 {
+            let mut keys_in_tree: Vec<String> = tree
+                .roots
+                .iter()
+                .flat_map(|r| r.collect_leaves(None))
+                .map(|(k, _)| k)
+                .collect();
+            keys_in_tree.sort();
+            keys_in_tree.dedup();
+
+            let mut ref_keys: Vec<String> = reference.keys().cloned().collect();
+            ref_keys.sort();
+
+            if keys_in_tree != ref_keys {
+                panic!(
+                    "Divergence at op {}: op='{}'\nkeys_in_tree.len={} ref.len={}\nops so far:\n{}",
+                    i,
+                    ops_log.last().unwrap_or(&"<none>".to_string()),
+                    keys_in_tree.len(),
+                    ref_keys.len(),
+                    ops_log.join("\n")
+                );
+            }
+        }
+    }
+
+    // final full-scan: collect leaves and compare key sets
+    let mut keys: Vec<String> = tree
+        .roots
+        .iter()
+        .flat_map(|r| r.collect_leaves(None))
+        .map(|(k, _)| k)
+        .collect();
+    keys.sort();
+    keys.dedup();
+
+    let mut ref_keys: Vec<String> = reference.keys().cloned().collect();
+    ref_keys.sort();
+    if keys != ref_keys {
+        panic!(
+            "Final state mismatch (large test): keys.len()={} ref.len()={}\nops_log (all):\n{}\n",
+            keys.len(),
+            ref_keys.len(),
+            ops_log
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
 #[test]
 fn test_get_with_proof_verifies() {
     let mut tree = AccumulatorTree::new();
@@ -610,14 +766,23 @@ fn test_get_with_proof_verifies() {
     // verify the proof recomputes the root correctly
     assert!(proof.verify());
     // also verify with key/fid convenience
-    assert!(crate::proof::Proof::verify_with_kv(proof.root_hash, "P", "PV", proof.path.clone()));
+    assert!(crate::proof::Proof::verify_with_kv(
+        proof.root_hash,
+        "P",
+        "PV",
+        proof.path.clone()
+    ));
 
     // ensure QueryResponse populated root_hash and acc_witness/acc
     assert_eq!(qr.root_hash, Some(proof.root_hash));
     let acc_val = qr.acc.expect("acc must be present");
     let witness = qr.acc_witness.expect("witness must be present");
     // verify accumulator membership witness
-    assert!(acc::Acc::verify_membership(&acc_val, &witness, &"P".to_string()));
+    assert!(acc::Acc::verify_membership(
+        &acc_val,
+        &witness,
+        &"P".to_string()
+    ));
 
     // combined verification convenience
     assert!(qr.verify_full("P", "PV"));
