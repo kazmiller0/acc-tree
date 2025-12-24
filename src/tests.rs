@@ -626,6 +626,35 @@ fn test_get_with_proof_verifies() {
 }
 
 #[test]
+fn test_update_with_proof() {
+    let mut tree = AccumulatorTree::new();
+    tree.insert("Ukey".to_string(), "Ufid".to_string());
+
+    // perform update with proof
+    let resp = tree
+        .update_with_proof("Ukey", "Ufid_new".to_string())
+        .expect("update_with_proof should succeed");
+
+    // old fid recorded
+    assert_eq!(resp.old_fid, Some("Ufid".to_string()));
+    assert_eq!(resp.new_fid, "Ufid_new".to_string());
+
+    // post proof verifies
+    assert!(resp.post_proof.verify());
+
+    // if pre proof is present, ensure sibling paths match so only leaf changed
+    if let Some(pre) = &resp.pre_proof {
+        assert_eq!(pre.path.len(), resp.post_proof.path.len());
+        for i in 0..pre.path.len() {
+            assert_eq!(pre.path[i], resp.post_proof.path[i]);
+        }
+    }
+
+    // verify using UpdateResponse convenience check
+    assert!(resp.verify_update());
+}
+
+#[test]
 fn test_get_with_nonmembership_when_absent() {
     let tree = AccumulatorTree::new();
     // empty tree: key absent

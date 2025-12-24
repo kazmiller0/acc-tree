@@ -187,6 +187,107 @@ impl NonMembershipProof {
         true
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct UpdateResponse {
+    /// key updated
+    pub key: String,
+    /// fid before update
+    pub old_fid: Option<String>,
+    /// fid after update
+    pub new_fid: String,
+    /// membership proof for the leaf before update
+    pub pre_proof: Option<Proof>,
+    /// accumulator value before update (for the root containing the key)
+    pub pre_acc: Option<G1Affine>,
+    /// accumulator witness for the old element
+    pub pre_acc_witness: Option<G1Affine>,
+    /// membership proof for the leaf after update
+    pub post_proof: Proof,
+    /// accumulator value after update (for the root containing the key)
+    pub post_acc: G1Affine,
+    /// accumulator witness for the new element
+    pub post_acc_witness: G1Affine,
+    /// root hash before update (if available)
+    pub pre_root_hash: Option<Hash>,
+    /// root hash after update
+    pub post_root_hash: Hash,
+}
+
+impl UpdateResponse {
+    pub fn new(
+        key: String,
+        old_fid: Option<String>,
+        new_fid: String,
+        pre_proof: Option<Proof>,
+        pre_acc: Option<G1Affine>,
+        pre_acc_witness: Option<G1Affine>,
+        post_proof: Proof,
+        post_acc: G1Affine,
+        post_acc_witness: G1Affine,
+        pre_root_hash: Option<Hash>,
+        post_root_hash: Hash,
+    ) -> Self {
+        Self {
+            key,
+            old_fid,
+            new_fid,
+            pre_proof,
+            pre_acc,
+            pre_acc_witness,
+            post_proof,
+            post_acc,
+            post_acc_witness,
+            pre_root_hash,
+            post_root_hash,
+        }
+    }
+
+    /// Verify that the update was well-formed: pre/post proofs are valid and the
+    /// Merkle path siblings match (i.e. only the leaf changed), and accumulator
+    /// membership holds for old/new values respectively when provided.
+    pub fn verify_update(&self) -> bool {
+        // verify pre proof if present
+        if let Some(pre_p) = &self.pre_proof {
+            if !pre_p.verify() {
+                return false;
+            }
+        }
+
+        // verify post proof
+        if !self.post_proof.verify() {
+            return false;
+        }
+
+        // sibling paths (excluding leaf_hash) should match between pre and post
+        if let Some(pre_p) = &self.pre_proof {
+            if pre_p.path.len() != self.post_proof.path.len() {
+                return false;
+            }
+            for (i, (psib, pleft)) in pre_p.path.iter().enumerate() {
+                let (qsib, qleft) = &self.post_proof.path[i];
+                if psib != qsib || pleft != qleft {
+                    return false;
+                }
+            }
+        }
+
+        // verify accumulator membership: pre (old) and post (new)
+        if let (Some(acc), Some(w)) = (&self.pre_acc, &self.pre_acc_witness) {
+            if let Some(_old) = &self.old_fid {
+                if !acc::Acc::verify_membership(acc, w, &self.key) {
+                    return false;
+                }
+            }
+        }
+
+        if !acc::Acc::verify_membership(&self.post_acc, &self.post_acc_witness, &self.key) {
+            return false;
+        }
+
+        true
+    }
+}
 // use acc::G1Affine;
 
 // pub struct QueryResponse {

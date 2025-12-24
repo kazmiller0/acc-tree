@@ -610,6 +610,54 @@ impl AccumulatorTree {
         }
     }
 
+    /// Update with proof: returns an `UpdateResponse` capturing pre/post proofs
+    /// and accumulator witnesses so a verifier can confirm that only the
+    /// `fid` for `key` changed and the rest of the tree is unchanged.
+    pub fn update_with_proof(
+        &mut self,
+        key: &str,
+        new_fid: String,
+    ) -> Result<crate::proof::UpdateResponse, String> {
+        // obtain pre-update proof (must exist)
+        let pre_qr = self.get_with_proof(key);
+        let old_fid = pre_qr.fid.clone();
+        if old_fid.is_none() {
+            return Err(format!("key '{}' not found for update", key));
+        }
+        // capture pre acc/root
+        let pre_acc = pre_qr.acc;
+        let pre_acc_witness = pre_qr.acc_witness;
+        let pre_root_hash = pre_qr.root_hash;
+        let pre_proof = pre_qr.proof;
+
+        // perform the update
+        self.update(key, new_fid.clone());
+
+        // obtain post-update proof
+        let post_qr = self.get_with_proof(key);
+        if post_qr.fid.is_none() {
+            return Err("post-update: key missing after update".to_string());
+        }
+        let post_proof = post_qr.proof.expect("post proof present");
+        let post_acc = post_qr.acc.expect("post acc present");
+        let post_acc_witness = post_qr.acc_witness.expect("post acc witness present");
+        let post_root_hash = post_qr.root_hash.expect("post root hash present");
+
+        Ok(crate::proof::UpdateResponse::new(
+            key.to_string(),
+            old_fid,
+            new_fid,
+            pre_proof,
+            pre_acc,
+            pre_acc_witness,
+            post_proof,
+            post_acc,
+            post_acc_witness,
+            pre_root_hash,
+            post_root_hash,
+        ))
+    }
+
     pub fn delete(&mut self, key: &str) {
         if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
             let root = self.roots.remove(idx);
