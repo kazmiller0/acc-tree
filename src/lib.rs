@@ -200,6 +200,72 @@ fn get_proof_recursive(
     }
 }
 
+/// Find predecessor (max key < target) and successor (min key > target) within `node`.
+/// Returns (found_exact, pred_opt, succ_opt)
+fn find_pred_succ(
+    node: &Node,
+    target: &str,
+) -> (bool, Option<(String, String)>, Option<(String, String)>) {
+    match node {
+        Node::Leaf {
+            key, fid, deleted, ..
+        } => {
+            if *deleted {
+                return (false, None, None);
+            }
+            if key == target {
+                return (true, None, None);
+            }
+            if key.as_str() < target {
+                (false, Some((key.clone(), fid.clone())), None)
+            } else {
+                (false, None, Some((key.clone(), fid.clone())))
+            }
+        }
+        Node::NonLeaf { left, right, .. } => {
+            // search left and right subtrees and merge results
+            let (found_l, pred_l, succ_l) = find_pred_succ(left, target);
+            if found_l {
+                return (true, None, None);
+            }
+            let (found_r, pred_r, succ_r) = find_pred_succ(right, target);
+            if found_r {
+                return (true, None, None);
+            }
+
+            // merge preds: prefer the larger key
+            let pred = match (pred_l, pred_r) {
+                (None, None) => None,
+                (Some(p), None) => Some(p),
+                (None, Some(p)) => Some(p),
+                (Some(p1), Some(p2)) => {
+                    if p1.0 > p2.0 {
+                        Some(p1)
+                    } else {
+                        Some(p2)
+                    }
+                }
+            };
+
+            // merge succs: prefer the smaller key
+            let succ = match (succ_l, succ_r) {
+                (None, None) => None,
+                (Some(s), None) => Some(s),
+                (None, Some(s)) => Some(s),
+                (Some(s1), Some(s2)) => {
+                    if s1.0 < s2.0 {
+                        Some(s1)
+                    } else {
+                        Some(s2)
+                    }
+                }
+            };
+
+            (false, pred, succ)
+        }
+    }
+}
+
 /// return: hash_changed
 pub fn update_recursive(node: &mut Box<Node>, target_key: &str, new_fid: &str) -> bool {
     match **node {
@@ -411,6 +477,97 @@ impl AccumulatorTree {
         self.normalize();
     }
 
+    /// Insert with proof: returns pre-insert snapshot and post-insert proofs.
+    /// Note: strong non-membership proofs are not implemented; we provide a pre-insert
+    /// snapshot (`pre_roots`) that a verifier can use with application-level checks.
+    pub fn insert_with_proof(&mut self, key: String, fid: String) -> crate::proof::InsertResponse {
+        // capture pre-insert snapshot (root hash + acc) for all roots
+        let pre_roots: Vec<(Hash, acc::G1Affine)> =
+            self.roots.iter().map(|r| (r.hash(), r.acc())).collect();
+
+        // capture pre-insert non-membership proof (if any)
+        let pre_nonmembership = self.get_nonmembership_proof(&key);
+
+        // perform insertion (this will revive if exists)
+        self.insert(key.clone(), fid.clone());
+
+        // build post-insert proof for the inserted key
+        let qr = self.get_with_proof(&key);
+        let post_root_hash = qr.root_hash;
+        let post_acc = qr.acc;
+        let post_proof = qr.proof;
+        let post_acc_witness = qr.acc_witness;
+
+        crate::proof::InsertResponse::new(
+            key,
+            fid,
+            pre_roots,
+            post_root_hash,
+            post_acc,
+            post_proof,
+            post_acc_witness,
+            pre_nonmembership,
+        )
+    }
+
+    /// Produce a non-membership proof for `key` by returning the predecessor and successor
+    /// leaves (if any) together with their Merkle proofs. Returns `None` if the key exists.
+    pub fn get_nonmembership_proof(&self, key: &str) -> Option<crate::proof::NonMembershipProof> {
+        // Track best global predecessor (max < key) and successor (min > key)
+        let mut best_pred: Option<((String, String), usize)> = None; // ((k,fid), root_idx)
+        let mut best_succ: Option<((String, String), usize)> = None; // ((k,fid), root_idx)
+
+        for (i, root) in self.roots.iter().enumerate() {
+            let (found, pred, succ) = find_pred_succ(root.as_ref(), key);
+            if found {
+                return None; // key exists
+            }
+            if let Some((pk, pf)) = pred {
+                let should_replace = match &best_pred {
+                    None => true,
+                    Some(((bk, _), _)) => pk > *bk,
+                };
+                if should_replace {
+                    best_pred = Some(((pk, pf), i));
+                }
+            }
+            if let Some((sk, sf)) = succ {
+                let should_replace = match &best_succ {
+                    None => true,
+                    Some(((bk, _), _)) => sk < *bk,
+                };
+                if should_replace {
+                    best_succ = Some(((sk, sf), i));
+                }
+            }
+        }
+
+        // build proofs for pred/succ using their respective roots
+        let pred_proof = if let Some(((k, f), idx)) = best_pred.clone() {
+            let mut path: Vec<(Hash, bool)> = Vec::new();
+            let _ = get_proof_recursive(&self.roots[idx], &k, &mut path);
+            let root_h = self.roots[idx].hash();
+            let leaf_h = leaf_hash(&k, &f);
+            Some((k, f, crate::proof::Proof::new(root_h, leaf_h, path)))
+        } else {
+            None
+        };
+
+        let succ_proof = if let Some(((k, f), idx)) = best_succ.clone() {
+            let mut path: Vec<(Hash, bool)> = Vec::new();
+            let _ = get_proof_recursive(&self.roots[idx], &k, &mut path);
+            let root_h = self.roots[idx].hash();
+            let leaf_h = leaf_hash(&k, &f);
+            Some((k, f, crate::proof::Proof::new(root_h, leaf_h, path)))
+        } else {
+            None
+        };
+
+        Some(crate::proof::NonMembershipProof::new(
+            pred_proof, succ_proof,
+        ))
+    }
+
     pub fn get(&self, key: &str) -> Option<String> {
         for r in &self.roots {
             if let Some(v) = get_recursive(r, key) {
@@ -438,10 +595,13 @@ impl AccumulatorTree {
                     Some(root_h),
                     Some(acc_val),
                     Some(acc_witness),
+                    None,
                 );
             }
         }
-        crate::proof::QueryResponse::new(None, None, None, None, None)
+        // not found: try to construct non-membership proof
+        let nm = self.get_nonmembership_proof(key);
+        crate::proof::QueryResponse::new(None, None, None, None, None, nm)
     }
 
     pub fn update(&mut self, key: &str, new_fid: String) {

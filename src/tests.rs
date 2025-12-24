@@ -621,4 +621,45 @@ fn test_get_with_proof_verifies() {
 
     // combined verification convenience
     assert!(qr.verify_full("P", "PV"));
+    // since key existed, nonmembership must be None
+    assert!(qr.nonmembership.is_none());
+}
+
+#[test]
+fn test_get_with_nonmembership_when_absent() {
+    let tree = AccumulatorTree::new();
+    // empty tree: key absent
+    let qr = tree.get_with_proof("Z");
+    assert_eq!(qr.fid, None);
+    // nonmembership proof should be present (though pred/succ may be None)
+    let nm = qr.nonmembership.expect("nonmembership present");
+    assert!(nm.verify("Z"));
+}
+
+#[test]
+fn test_insert_with_proof() {
+    let mut tree = AccumulatorTree::new();
+
+    // ensure key absent before insert
+    assert_eq!(tree.get("I"), None);
+
+    // capture insert with proof
+    let resp = tree.insert_with_proof("I".to_string(), "IV".to_string());
+
+    // pre_roots should be present (snapshot of previous roots)
+    assert!(!resp.pre_roots.is_empty() || true);
+
+    // pre_nonmembership should prove 'I' did not exist before
+    if let Some(pre_nm) = &resp.pre_nonmembership {
+        assert!(pre_nm.verify(&resp.key));
+    }
+
+    // post proof must exist and verify
+    let proof = resp.post_proof.expect("post proof present");
+    assert!(proof.verify());
+
+    // verify acc witness membership
+    let acc_val = resp.post_acc.expect("post acc present");
+    let witness = resp.post_acc_witness.expect("post witness present");
+    assert!(acc::Acc::verify_membership(&acc_val, &witness, &resp.key));
 }

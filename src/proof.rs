@@ -54,6 +54,8 @@ pub struct QueryResponse {
     pub acc: Option<G1Affine>,
     /// accumulator witness (G1Affine) for the element in the subtree's accumulator
     pub acc_witness: Option<G1Affine>,
+    /// non-membership proof when the key is not found
+    pub nonmembership: Option<NonMembershipProof>,
 }
 
 impl QueryResponse {
@@ -63,6 +65,7 @@ impl QueryResponse {
         root_hash: Option<Hash>,
         acc: Option<G1Affine>,
         acc_witness: Option<G1Affine>,
+        nonmembership: Option<NonMembershipProof>,
     ) -> Self {
         Self {
             fid,
@@ -70,6 +73,7 @@ impl QueryResponse {
             root_hash,
             acc,
             acc_witness,
+            nonmembership,
         }
     }
 
@@ -93,6 +97,94 @@ impl QueryResponse {
             }
             _ => false,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InsertResponse {
+    /// key inserted
+    pub key: String,
+    /// fid inserted
+    pub fid: String,
+    /// snapshot of roots before insertion: vector of (root_hash, acc)
+    pub pre_roots: Vec<(Hash, G1Affine)>,
+    /// snapshot of root hash after insertion (the root that contains the inserted key)
+    pub post_root_hash: Option<Hash>,
+    /// accumulator value after insertion for the root containing the key
+    pub post_acc: Option<G1Affine>,
+    /// merkle/path proof for the inserted leaf after insertion
+    pub post_proof: Option<Proof>,
+    /// accumulator witness for the inserted element in the post_acc
+    pub post_acc_witness: Option<G1Affine>,
+    /// optional non-membership proof captured before insertion
+    pub pre_nonmembership: Option<NonMembershipProof>,
+}
+
+impl InsertResponse {
+    pub fn new(
+        key: String,
+        fid: String,
+        pre_roots: Vec<(Hash, G1Affine)>,
+        post_root_hash: Option<Hash>,
+        post_acc: Option<G1Affine>,
+        post_proof: Option<Proof>,
+        post_acc_witness: Option<G1Affine>,
+        pre_nonmembership: Option<NonMembershipProof>,
+    ) -> Self {
+        Self {
+            key,
+            fid,
+            pre_roots,
+            post_root_hash,
+            post_acc,
+            post_proof,
+            post_acc_witness,
+            pre_nonmembership,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NonMembershipProof {
+    /// predecessor: (key, fid, proof)
+    pub pred: Option<(String, String, Proof)>,
+    /// successor: (key, fid, proof)
+    pub succ: Option<(String, String, Proof)>,
+}
+
+impl NonMembershipProof {
+    pub fn new(
+        pred: Option<(String, String, Proof)>,
+        succ: Option<(String, String, Proof)>,
+    ) -> Self {
+        Self { pred, succ }
+    }
+
+    /// Verify non-membership with respect to provided key.
+    /// Returns true if proofs for pred/succ (if present) validate and ordering holds.
+    pub fn verify(&self, key: &str) -> bool {
+        // verify predecessor proof and ordering
+        if let Some((pkey, _pfid, pproof)) = &self.pred {
+            if !pproof.verify() {
+                return false;
+            }
+            if !(pkey.as_str() < key) {
+                return false;
+            }
+        }
+
+        // verify successor proof and ordering
+        if let Some((skey, _sfid, sproof)) = &self.succ {
+            if !sproof.verify() {
+                return false;
+            }
+            if !(key < skey.as_str()) {
+                return false;
+            }
+        }
+
+        // if both absent, tree is empty -> non-membership trivially true
+        true
     }
 }
 // use acc::G1Affine;
