@@ -133,7 +133,7 @@ assert!(acc::Acc::verify_membership(&acc, &witness, &resp.key));
     3. 插入或 revive 叶节点。
     4. 插入后，调用 `get_with_proof(key)` 构建 `post_proof`（`Proof`，包含 `root_hash`、`leaf_hash`、`path`）以及 `post_acc` / `post_acc_witness`（使用 `Acc::create_witness`）。
   - 验证要点：
-    - 使用 `Proof::verify()` 或 `Proof::verify_with_kv(root_hash, key, fid, path)` 验证 Merkle 路径正确。
+    - 使用 `Proof::verify()` 或 `proof.verify_with_kv(key, fid)` 验证 Merkle 路径正确（推荐使用实例方法）。
     - 验证累加器成员性：`acc::Acc::verify_membership(&post_acc, &post_acc_witness, &key)`。
     - 若提供 `pre_nonmembership`，验证其 `verify(key)`，断言 key 在插入前不存在（基于位置式前驱/后继证明）。
 
@@ -142,7 +142,7 @@ assert!(acc::Acc::verify_membership(&acc, &witness, &resp.key));
   - 情况 A（存在）：返回 `fid`、`proof`（`Proof`）、`root_hash`、`acc`、`acc_witness`。
   - 情况 B（不存在）：返回 `nonmembership: Option<NonMembershipProof>`，包含前驱/后继及其 Merkle 证明。
   - 验证要点（存在）：
-    - `Proof::verify_with_kv(root_hash, key, fid, path)` 验证 Merkle 路径。
+    - `proof.verify_with_kv(key, fid)` 验证 Merkle 路径。
     - `acc::Acc::verify_membership(&acc, &acc_witness, &key)` 验证累加器见证。
     - 或者调用 `QueryResponse::verify_full(key, fid)` 完整验证路径与累加器。
   - 验证要点（不存在）：

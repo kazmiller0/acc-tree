@@ -34,11 +34,14 @@ impl Proof {
         cur == self.root_hash
     }
 
-    /// Convenience: create a leaf hash from key and fid then verify using provided root and path
-    pub fn verify_with_kv(root_hash: Hash, key: &str, fid: &str, path: Vec<(Hash, bool)>) -> bool {
+    /// Convenience: recompute the leaf hash from `key`/`fid` and verify this proof.
+    /// Returns false if the recomputed leaf hash does not match `self.leaf_hash`.
+    pub fn verify_with_kv(&self, key: &str, fid: &str) -> bool {
         let leaf = leaf_hash(key, fid);
-        let p = Proof::new(root_hash, leaf, path);
-        p.verify()
+        if leaf != self.leaf_hash {
+            return false;
+        }
+        self.verify()
     }
 }
 
@@ -82,8 +85,8 @@ impl QueryResponse {
     /// to build the leaf hash.
     pub fn verify_full(&self, key: &str, fid: &str) -> bool {
         // verify Merkle path using provided key/fid (prevents leaf tampering)
-        let merkle_ok = match (self.root_hash, &self.proof) {
-            (Some(root), Some(p)) => Proof::verify_with_kv(root, key, fid, p.path.clone()),
+        let merkle_ok = match (&self.root_hash, &self.proof) {
+            (Some(_root), Some(p)) => p.verify_with_kv(key, fid),
             _ => false,
         };
         if !merkle_ok {

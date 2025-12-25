@@ -766,12 +766,7 @@ fn test_get_with_proof_verifies() {
     // verify the proof recomputes the root correctly
     assert!(proof.verify());
     // also verify with key/fid convenience
-    assert!(crate::proof::Proof::verify_with_kv(
-        proof.root_hash,
-        "P",
-        "PV",
-        proof.path.clone()
-    ));
+    assert!(proof.verify_with_kv("P", "PV"));
 
     // ensure QueryResponse populated root_hash and acc_witness/acc
     assert_eq!(qr.root_hash, Some(proof.root_hash));
