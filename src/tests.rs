@@ -768,10 +768,10 @@ fn test_get_with_proof_verifies() {
     // also verify with key/fid convenience
     assert!(proof.verify_with_kv("P", "PV"));
 
-    // ensure QueryResponse populated root_hash and acc_witness/acc
+    // ensure QueryResponse populated root_hash and membership_witness/accumulator
     assert_eq!(qr.root_hash, Some(proof.root_hash));
-    let acc_val = qr.acc.expect("acc must be present");
-    let witness = qr.acc_witness.expect("witness must be present");
+    let acc_val = qr.accumulator.expect("acc must be present");
+    let witness = qr.membership_witness.expect("witness must be present");
     // verify accumulator membership witness
     assert!(acc::Acc::verify_membership(
         &acc_val,
@@ -870,8 +870,8 @@ fn test_insert_with_proof() {
     let proof = resp.post_proof.expect("post proof present");
     assert!(proof.verify());
 
-    // verify acc witness membership
-    let acc_val = resp.post_acc.expect("post acc present");
-    let witness = resp.post_acc_witness.expect("post witness present");
+    // verify membership witness against accumulator
+    let acc_val = resp.post_accumulator.expect("post acc present");
+    let witness = resp.post_membership_witness.expect("post witness present");
     assert!(acc::Acc::verify_membership(&acc_val, &witness, &resp.key));
 }

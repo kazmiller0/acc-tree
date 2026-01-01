@@ -54,9 +54,9 @@ pub struct QueryResponse {
     /// root hash of the subtree used to produce the proof
     pub root_hash: Option<Hash>,
     /// accumulator value (G1Affine) for the subtree's keys
-    pub acc: Option<G1Affine>,
-    /// accumulator witness (G1Affine) for the element in the subtree's accumulator
-    pub acc_witness: Option<G1Affine>,
+    pub accumulator: Option<G1Affine>,
+    /// membership witness (G1Affine) for the element in the subtree's accumulator
+    pub membership_witness: Option<G1Affine>,
     /// non-membership proof when the key is not found
     pub nonmembership: Option<NonMembershipProof>,
 }
@@ -66,16 +66,16 @@ impl QueryResponse {
         fid: Option<String>,
         proof: Option<Proof>,
         root_hash: Option<Hash>,
-        acc: Option<G1Affine>,
-        acc_witness: Option<G1Affine>,
+        accumulator: Option<G1Affine>,
+        membership_witness: Option<G1Affine>,
         nonmembership: Option<NonMembershipProof>,
     ) -> Self {
         Self {
             fid,
             proof,
             root_hash,
-            acc,
-            acc_witness,
+            accumulator,
+            membership_witness,
             nonmembership,
         }
     }
@@ -94,7 +94,7 @@ impl QueryResponse {
         }
 
         // verify accumulator membership: acc + element_commitment == acc (via witness)
-        match (&self.acc, &self.acc_witness) {
+        match (&self.accumulator, &self.membership_witness) {
             (Some(acc), Some(witness)) => {
                 acc::Acc::verify_membership(acc, witness, &key.to_string())
             }
@@ -114,11 +114,11 @@ pub struct InsertResponse {
     /// snapshot of root hash after insertion (the root that contains the inserted key)
     pub post_root_hash: Option<Hash>,
     /// accumulator value after insertion for the root containing the key
-    pub post_acc: Option<G1Affine>,
+    pub post_accumulator: Option<G1Affine>,
     /// merkle/path proof for the inserted leaf after insertion
     pub post_proof: Option<Proof>,
-    /// accumulator witness for the inserted element in the post_acc
-    pub post_acc_witness: Option<G1Affine>,
+    /// membership witness for the inserted element in the post_accumulator
+    pub post_membership_witness: Option<G1Affine>,
     /// optional non-membership proof captured before insertion
     pub pre_nonmembership: Option<NonMembershipProof>,
 }
@@ -129,9 +129,9 @@ impl InsertResponse {
         fid: String,
         pre_roots: Vec<(Hash, G1Affine)>,
         post_root_hash: Option<Hash>,
-        post_acc: Option<G1Affine>,
+        post_accumulator: Option<G1Affine>,
         post_proof: Option<Proof>,
-        post_acc_witness: Option<G1Affine>,
+        post_membership_witness: Option<G1Affine>,
         pre_nonmembership: Option<NonMembershipProof>,
     ) -> Self {
         Self {
@@ -139,9 +139,9 @@ impl InsertResponse {
             fid,
             pre_roots,
             post_root_hash,
-            post_acc,
+            post_accumulator,
             post_proof,
-            post_acc_witness,
+            post_membership_witness,
             pre_nonmembership,
         }
     }
@@ -202,15 +202,15 @@ pub struct UpdateResponse {
     /// membership proof for the leaf before update
     pub pre_proof: Option<Proof>,
     /// accumulator value before update (for the root containing the key)
-    pub pre_acc: Option<G1Affine>,
-    /// accumulator witness for the old element
-    pub pre_acc_witness: Option<G1Affine>,
+    pub pre_accumulator: Option<G1Affine>,
+    /// membership witness for the old element
+    pub pre_membership_witness: Option<G1Affine>,
     /// membership proof for the leaf after update
     pub post_proof: Proof,
     /// accumulator value after update (for the root containing the key)
-    pub post_acc: G1Affine,
-    /// accumulator witness for the new element
-    pub post_acc_witness: G1Affine,
+    pub post_accumulator: G1Affine,
+    /// membership witness for the new element
+    pub post_membership_witness: G1Affine,
     /// root hash before update (if available)
     pub pre_root_hash: Option<Hash>,
     /// root hash after update
@@ -236,11 +236,11 @@ impl UpdateResponse {
             old_fid,
             new_fid,
             pre_proof,
-            pre_acc,
-            pre_acc_witness,
+            pre_accumulator: pre_acc,
+            pre_membership_witness: pre_acc_witness,
             post_proof,
-            post_acc,
-            post_acc_witness,
+            post_accumulator: post_acc,
+            post_membership_witness: post_acc_witness,
             pre_root_hash,
             post_root_hash,
         }
@@ -276,7 +276,7 @@ impl UpdateResponse {
         }
 
         // verify accumulator membership: pre (old) and post (new)
-        if let (Some(acc), Some(w)) = (&self.pre_acc, &self.pre_acc_witness) {
+        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness) {
             if let Some(_old) = &self.old_fid {
                 if !acc::Acc::verify_membership(acc, w, &self.key) {
                     return false;
@@ -284,7 +284,11 @@ impl UpdateResponse {
             }
         }
 
-        if !acc::Acc::verify_membership(&self.post_acc, &self.post_acc_witness, &self.key) {
+        if !acc::Acc::verify_membership(
+            &self.post_accumulator,
+            &self.post_membership_witness,
+            &self.key,
+        ) {
             return false;
         }
 
@@ -301,13 +305,13 @@ pub struct DeleteResponse {
     /// membership proof for the leaf before deletion
     pub pre_proof: Option<Proof>,
     /// accumulator value before deletion (for the root containing the key)
-    pub pre_acc: Option<G1Affine>,
-    /// accumulator witness for the old element
-    pub pre_acc_witness: Option<G1Affine>,
+    pub pre_accumulator: Option<G1Affine>,
+    /// membership witness for the old element
+    pub pre_membership_witness: Option<G1Affine>,
     /// merkle/path proof for the tombstoned leaf after deletion (leaf hash will be empty_hash)
     pub post_proof: Proof,
     /// accumulator value after deletion for the root containing the tombstone
-    pub post_acc: G1Affine,
+    pub post_accumulator: G1Affine,
     /// root hash before deletion (if available)
     pub pre_root_hash: Option<Hash>,
     /// root hash after deletion
@@ -330,10 +334,10 @@ impl DeleteResponse {
             key,
             old_fid,
             pre_proof,
-            pre_acc,
-            pre_acc_witness,
+            pre_accumulator: pre_acc,
+            pre_membership_witness: pre_acc_witness,
             post_proof,
-            post_acc,
+            post_accumulator: post_acc,
             pre_root_hash,
             post_root_hash,
         }
@@ -368,7 +372,7 @@ impl DeleteResponse {
         }
 
         // verify accumulator membership for pre-state (old element)
-        if let (Some(acc), Some(w)) = (&self.pre_acc, &self.pre_acc_witness) {
+        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness) {
             if let Some(_old) = &self.old_fid {
                 if !acc::Acc::verify_membership(acc, w, &self.key) {
                     return false;

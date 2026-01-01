@@ -526,9 +526,9 @@ impl AccumulatorTree {
         // build post-insert proof for the inserted key
         let qr = self.get_with_proof(&key);
         let post_root_hash = qr.root_hash;
-        let post_acc = qr.acc;
+        let post_acc = qr.accumulator;
         let post_proof = qr.proof;
-        let post_acc_witness = qr.acc_witness;
+        let post_acc_witness = qr.membership_witness;
 
         crate::proof::InsertResponse::new(
             key,
@@ -657,8 +657,8 @@ impl AccumulatorTree {
             return Err(format!("key '{}' not found for update", key));
         }
         // capture pre acc/root
-        let pre_acc = pre_qr.acc;
-        let pre_acc_witness = pre_qr.acc_witness;
+        let pre_acc = pre_qr.accumulator;
+        let pre_acc_witness = pre_qr.membership_witness;
         let pre_root_hash = pre_qr.root_hash;
         let pre_proof = pre_qr.proof;
 
@@ -671,8 +671,8 @@ impl AccumulatorTree {
             return Err("post-update: key missing after update".to_string());
         }
         let post_proof = post_qr.proof.expect("post proof present");
-        let post_acc = post_qr.acc.expect("post acc present");
-        let post_acc_witness = post_qr.acc_witness.expect("post acc witness present");
+        let post_acc = post_qr.accumulator.expect("post acc present");
+        let post_acc_witness = post_qr.membership_witness.expect("post acc witness present");
         let post_root_hash = post_qr.root_hash.expect("post root hash present");
 
         Ok(crate::proof::UpdateResponse::new(
@@ -710,8 +710,8 @@ impl AccumulatorTree {
             return Err(format!("key '{}' not found for delete", key));
         }
         let pre_proof = pre_qr.proof;
-        let pre_acc = pre_qr.acc;
-        let pre_acc_witness = pre_qr.acc_witness;
+        let pre_acc = pre_qr.accumulator;
+        let pre_acc_witness = pre_qr.membership_witness;
         let pre_root_hash = pre_qr.root_hash;
 
         // perform deletion
