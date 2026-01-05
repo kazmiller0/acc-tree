@@ -1,81 +1,148 @@
-证明实现与验证流程（增删改查）
-================================
+# 证明生成与验证机制文档（按 CRUD 操作分类）
 
-下面按 CRUD 操作分别说明在本项目中如何生成证明（proof）以及验证（verify）这些证明的流程，包含关键代码点与验证要点。
+本文档按照增删改查（CRUD）的操作维度，详细说明了 `AccumulatorTree` 中各类证明（Proof）的生成逻辑与验证流程。
 
-1) 创建 / 插入（Insert）
-- 生成证明：调用 `AccumulatorTree::insert_with_proof(key, fid)`。
-  - 步骤：
-    1. 在插入前，采集 `pre_roots`（每个 root 的 `(root_hash, acc)` 快照）。
-    2. 尝试构造 `pre_nonmembership`（调用 `get_nonmembership_proof`，返回 `NonMembershipProof` 包含前驱/后继的 Merkle 证明，若能构造）。
-    3. 插入或 revive 叶节点。
-    4. 插入后，调用 `get_with_proof(key)` 构建 `post_proof`（`Proof`，包含 `root_hash`、`leaf_hash`、`path`）以及 `post_accumulator` / `post_membership_witness`（使用 `Acc::create_witness`）。
-  - 验证要点：
-    - 使用 `Proof::verify()` 或 `proof.verify_with_kv(key, fid)` 验证 Merkle 路径正确（推荐使用实例方法）。
-    - 验证累加器成员性：`acc::Acc::verify_membership(&post_accumulator, &post_membership_witness, &key)`。
-    - 若提供 `pre_nonmembership`，验证其 `verify(key)`，断言 key 在插入前不存在（基于位置式前驱/后继证明）。
+## 1. 插入 (Insert)
 
-2) 查询 / 读取（Get）
-- 生成证明：调用 `AccumulatorTree::get_with_proof(key)`，得到 `QueryResponse`。
-  - 情况 A（存在）：返回 `fid`、`proof`（`Proof`）、`root_hash`、`accumulator`、`membership_witness`。
-  - 情况 B（不存在）：返回 `nonmembership: Option<NonMembershipProof>`，包含前驱/后继及其 Merkle 证明。
-  - 验证要点（存在）：
-    - `proof.verify_with_kv(key, fid)` 验证 Merkle 路径。
-    - `acc::Acc::verify_membership(&accumulator, &membership_witness, &key)` 验证累加器见证。
-    - 或者调用 `QueryResponse::verify_full(key, fid)` 完整验证路径与累加器。
-  - 验证要点（不存在）：
-    - 对 `NonMembershipProof` 中的前驱/后继分别调用 `Proof::verify()`，并检查键序（`pred.key < key < succ.key`）以断言非存在性。
+### 1.1 证明生成
+**核心函数**: `insert_with_proof(key, fid)`
 
-3) 更新（Update）
-- 生成证明：调用 `AccumulatorTree::update_with_proof(key, new_fid)`，得到 `UpdateResponse`。
-  - 步骤：
-    1. 在更新前调用 `get_with_proof(key)` 获得 `pre_proof`、`pre_accumulator`、`pre_membership_witness`、`pre_root_hash`。
-    2. 执行 `update_recursive` 修改叶节点的 `fid`。
-    3. 更新后调用 `get_with_proof(key)` 获得 `post_proof`、`post_accumulator`、`post_membership_witness`、`post_root_hash`。
-  - 验证要点：
-    - 验证 `pre_proof`（若存在）与 `post_proof` 都通过 `Proof::verify()`。
-    - 验证路径兄弟项一致性：`pre_proof.path` 与 `post_proof.path` 的长度与每一项（sibling hash + left/right 标记）应一致，确保仅叶发生更改。
-    - 验证累加器：若提供 `pre_accumulator`/`pre_membership_witness`，可校验旧元素在 `pre_accumulator` 中的成员性；始终校验 `post_accumulator` 中新元素的成员性：`acc::Acc::verify_membership(&post_accumulator, &post_membership_witness, &key)`。
-    - 可调用 `UpdateResponse::verify_update()` 执行上述检查的组合。
+插入操作会改变树的状态，因此证明包含插入前（Pre）和插入后（Post）的信息。
 
-4) 删除（Delete）
-- 生成证明：调用 `AccumulatorTree::delete_with_proof(key)`，得到 `DeleteResponse`。
-  - 步骤：
-    1. 在删除前调用 `get_with_proof(key)` 采集 `pre_proof`、`pre_accumulator`、`pre_membership_witness`、`pre_root_hash`。
-    2. 执行 `delete_recursive` 标记叶为 tombstone（`deleted = true`）。
-    3. 删除后使用 `get_proof_including_deleted` 定位 tombstone 叶并构建 `post_proof`（其 `leaf_hash` 应为 `empty_hash()`），同时返回 `post_accumulator`、`post_root_hash`。
-  - 验证要点：
-    - 验证 `pre_proof`（若存在）与 `post_proof` 的 Merkle 路径有效性（`Proof::verify()`）。
-    - 验证路径兄弟项一致性（`pre_proof.path` 与 `post_proof.path` 相同长度且对应项相同），以确保仅 leaf 被 tombstone 化。
-    - 若提供 `pre_accumulator`/`pre_membership_witness`，校验删除前元素在 `pre_accumulator` 中的成员性；删除后可通过 `post_accumulator` 验证剩余集合的正确性（注意：累加器实现为单元素集合的组合，删除会使 leaf 贡献为空）。
-    - 可调用 `DeleteResponse::verify_delete()` 执行组合检查。
+1.  **Pre-State 快照**:
+    *   在执行插入前，记录当前所有 Root 的 Hash 和 Accumulator 值 (`pre_roots`)。
+    *   尝试生成一个 **Non-Membership Proof** (`pre_nonmembership`)，证明该 Key 在插入前确实不存在。
+2.  **执行插入**:
+    *   将新 Key-Value 插入树中（可能会触发树的合并/Normalize）。
+3.  **Post-State 证明**:
+    *   调用 `get_with_proof(key)` 为刚插入的 Key 生成证明。
+    *   获取新的 Root Hash (`post_root_hash`)。
+    *   获取新的 Accumulator 值 (`post_accumulator`)。
+    *   生成新的 Membership Witness (`post_membership_witness`)。
 
-实现细节 & 注意事项
-- Merkle 证明
-  - 叶哈希由 `leaf_hash(key, fid)` 计算，内部节点由 `nonleaf_hash(left_hash, right_hash)` 计算。
-  - 路径表示为 `Vec<(Hash, bool)>`，其中 bool 表示 sibling 是否为左子树（`true` = sibling 在左侧）。
-  - `Proof::verify()` 通过从 `leaf_hash` 开始按路径重建根并与 `root_hash` 比较来验证。
+**返回结果**: `InsertResponse`
 
-- 累加器证明
-  - 子树的累加器值由 `Acc::cal_acc_g1(&keys)` 计算并缓存在 `Node::NonLeaf.acc`。
-  - 单元素见证通过 `Acc::create_witness(&acc, &key)` 生成，验证使用 `Acc::verify_membership(&acc, &witness, &key)`。
+### 1.2 验证流程
+验证者收到 `InsertResponse` 后应执行以下检查：
 
-- 非成员证明（位置式）
-  - 通过 `get_nonmembership_proof` 返回前驱/后继（如果存在），每个都包含对应的 `Proof`。
-  - 验证者检查前驱/后继的 Merkle 路径有效性并验证键序关系以断言目标 key 不存在。
+1.  **Pre-State 验证 (可选)**:
+    *   如果提供了 `pre_nonmembership`，调用 `pre_nonmembership.verify(key)` 确认 Key 在插入前不存在。
+2.  **Post-State 验证**:
+    *   **Merkle Path**: 验证 `post_proof` 是否有效，且 `leaf_hash` 匹配插入的 `key` 和 `fid`。
+    *   **Accumulator**: 调用 `acc::Acc::verify_membership(post_accumulator, post_membership_witness, key)` 验证新 Key 已被正确加入累加器。
 
-- 可信根哈希
-  - 所有证明依赖根哈希的可信性；在分布式或离线验证场景中，应由服务端签名 `root_hash` 并向验证者提供签名/时间戳以防止回放或分叉攻击。
+---
 
-示例快速参考（伪代码）
-```
-// 验证一次 get 的完整性
-let qr = tree.get_with_proof("key");
-if let Some(fid) = qr.fid {
-    assert!(qr.verify_full("key", &fid));
-} else if let Some(nm) = qr.nonmembership {
-    assert!(nm.verify("key"));
-}
-```
+## 2. 查询 (Get / Read)
 
-如需我把上述文档拆为单独文件（例如 `DOCS/PROOFS.md`）或生成对应的 Rustdoc 注释，我可以接着把文档结构化并提交改动。
+### 2.1 证明生成
+**核心函数**: `get_with_proof(key)`
+
+查询操作分为两种情况：Key 存在或 Key 不存在。
+
+*   **情况 A: Key 存在**
+    1.  找到包含 Key 的叶节点。
+    2.  **Merkle Path**: 从叶节点向上回溯到根，收集路径上所有兄弟节点的 Hash (`proof.path`)。
+    3.  **Accumulator Witness**: 计算该子树的累加器 Witness (`membership_witness`)。
+*   **情况 B: Key 不存在**
+    1.  调用 `get_nonmembership_proof`。
+    2.  在森林中寻找目标 Key 的**前驱** (Predecessor) 和**后继** (Successor)。
+    3.  为前驱和后继分别生成 Merkle Path Proof。
+
+**返回结果**: `QueryResponse`
+
+### 2.2 验证流程
+验证者收到 `QueryResponse` 后：
+
+*   **若返回了 FID (Key 存在)**:
+    1.  **Merkle Path**: 调用 `proof.verify_with_kv(key, fid)`。
+        *   计算 `leaf_hash(key, fid)`。
+        *   沿 `path` 重建 Root Hash，并与 `root_hash` 比对。
+    2.  **Accumulator**: 调用 `acc::Acc::verify_membership(accumulator, membership_witness, key)`。
+    *   *快捷方法*: `response.verify_full(key, fid)` 同时执行上述两步。
+
+*   **若未返回 FID (Key 不存在)**:
+    1.  检查 `nonmembership` 字段。
+    2.  调用 `nonmembership.verify(key)`：
+        *   验证前驱证明 (`pred`) 有效，且 `pred.key < target_key`。
+        *   验证后继证明 (`succ`) 有效，且 `succ.key > target_key`。
+        *   确认前驱和后继在排序上是紧邻的（或基于应用层信任）。
+
+---
+
+## 3. 更新 (Update)
+
+### 3.1 证明生成
+**核心函数**: `update_with_proof(key, new_fid)`
+
+更新操作修改现有的 Key 对应的 Value (FID)。
+
+1.  **Pre-State 证明**:
+    *   在更新前调用 `get_with_proof(key)`，获取旧状态的 Proof (`pre_proof`)、Accumulator (`pre_accumulator`) 等。
+2.  **执行更新**:
+    *   找到叶节点，修改其 FID。
+    *   重新计算沿途所有父节点的 Hash。
+3.  **Post-State 证明**:
+    *   再次调用 `get_with_proof(key)`，获取新状态的 Proof (`post_proof`) 等。
+
+**返回结果**: `UpdateResponse`
+
+### 3.2 验证流程
+验证者收到 `UpdateResponse` 后：
+
+1.  **独立验证**:
+    *   验证 `pre_proof` 对应旧 FID (`verify_with_kv(key, old_fid)`)。
+    *   验证 `post_proof` 对应新 FID (`verify_with_kv(key, new_fid)`)。
+2.  **路径一致性验证 (Path Consistency)**:
+    *   **核心逻辑**: 比较 `pre_proof.path` 和 `post_proof.path`。
+    *   **要求**: 两个路径的长度必须相等，且路径上每一个**兄弟节点**的 Hash 和方向必须完全一致。
+    *   **意义**: 这证明了除了目标叶节点本身发生变化外，通往根路径上的所有兄弟子树都没有被篡改。这是“仅修改了目标叶子”的强有力证明。
+3.  **Accumulator 验证**:
+    *   验证 `post_accumulator` 的成员性。
+
+*   *快捷方法*: `response.verify_update()`。
+
+---
+
+## 4. 删除 (Delete)
+
+### 4.1 证明生成
+**核心函数**: `delete_with_proof(key)`
+
+删除操作采用 **Tombstone** 机制，即不物理移除节点，而是将其标记为 `deleted`。
+
+1.  **Pre-State 证明**:
+    *   删除前调用 `get_with_proof(key)` 获取证明。
+2.  **执行删除**:
+    *   找到叶节点，设置 `deleted = true`。
+    *   重新计算 Hash（Tombstone 叶子的 Hash 通常为特定值，如 `Hash::default()` 或全零）。
+3.  **Post-State 证明**:
+    *   调用 `get_proof_including_deleted(key)`。这是一个特殊函数，允许为已删除的节点生成 Merkle Path。
+
+**返回结果**: `DeleteResponse`
+
+### 4.2 验证流程
+验证者收到 `DeleteResponse` 后：
+
+1.  **Pre-State 验证**:
+    *   验证 `pre_proof` 有效，证明删除前 Key 存在。
+2.  **Post-State 验证**:
+    *   验证 `post_proof` 有效。注意此时 `leaf_hash` 应该是 Tombstone Hash（例如空 Hash）。
+3.  **路径一致性验证**:
+    *   与更新操作一样，比较 `pre_proof.path` 和 `post_proof.path`，确保兄弟节点 Hash 完全一致。
+    *   这证明了仅仅是该叶节点变成了 Tombstone，而没有影响树的其他部分。
+
+*   *快捷方法*: `response.verify_delete()`。
+
+---
+
+## 5. 总结
+
+| 操作                | 涉及证明                          | 关键验证点                                    |
+| :------------------ | :-------------------------------- | :-------------------------------------------- |
+| **Insert**          | Pre-NonMem, Post-Merkle, Post-Acc | 插入后存在性，插入前不存在性                  |
+| **Get (Found)**     | Merkle Path, Acc Witness          | 路径哈希正确，累加器包含 Key                  |
+| **Get (Not Found)** | Non-Membership (Pred/Succ)        | 目标 Key 落在前驱和后继的空隙中               |
+| **Update**          | Pre-Proof, Post-Proof             | **路径一致性** (兄弟节点不变)，前后状态均有效 |
+| **Delete**          | Pre-Proof, Post-Proof (Tombstone) | **路径一致性**，Post-Leaf 为 Tombstone Hash   |
+

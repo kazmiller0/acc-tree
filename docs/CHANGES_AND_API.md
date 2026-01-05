@@ -6,7 +6,7 @@
 本仓库增加并完善了用于查询（Get）和插入（Insert）操作的证明生成与验证：
 
 - 成员证明（membership proof）
-  - 对于存在的 key，返回从叶到根的路径哈希证明（`Proof`），并返回对应子树的累加器值 `acc` 及单元素见证 `acc_witness`。
+  - 对于存在的 key，返回从叶到根的路径哈希证明（`Proof`），并返回对应子树的累加器值 `accumulator` 及单元素见证 `membership_witness`。
   - 提供 `Proof::verify()` 与 `QueryResponse::verify_full(key, fid)` 用来验证哈希路径与累加器成员性闭环。
 
 - 非成员证明（non-membership proof，方案 A：基于树位置）
@@ -14,12 +14,12 @@
   - 验证器只需验证前驱/后继各自的 Merkle 路径与键序关系（`pred.key < key < succ.key`）即可断言目标 key 不存在。
 
 - 插入证明（insert with proof）
-  - `insert_with_proof` 在插入前截取 `pre_roots`（每个 root 的 `(root_hash, acc)` 快照），并可以返回 `pre_nonmembership`（若能构造），在插入后返回 `post_proof`、`post_acc`、`post_acc_witness`。
+  - `insert_with_proof` 在插入前截取 `pre_roots`（每个 root 的 `(root_hash, accumulator)` 快照），并可以返回 `pre_nonmembership`（若能构造），在插入后返回 `post_proof`、`post_accumulator`、`post_membership_witness`。
 
 被修改 / 新增的文件（重点）
 -------------------------
 - `src/lib.rs`
-  - 新增：`get_with_proof(&self, key)` -> `QueryResponse`（包含 `fid`、`proof`、`root_hash`、`acc`、`acc_witness`、`nonmembership`）。
+  - 新增：`get_with_proof(&self, key)` -> `QueryResponse`（包含 `fid`、`proof`、`root_hash`、`accumulator`、`membership_witness`、`nonmembership`）。
   - 新增：`insert_with_proof(&mut self, key, fid)` -> `InsertResponse`（包含 `pre_roots`、`pre_nonmembership`、`post_*`）。
   - 新增：`get_nonmembership_proof(&self, key)` 和辅助函数 `find_pred_succ`/`get_proof_recursive`。
 
