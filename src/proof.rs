@@ -171,7 +171,7 @@ impl NonMembershipProof {
             if !pproof.verify() {
                 return false;
             }
-            if !(pkey.as_str() < key) {
+            if pkey.as_str() >= key {
                 return false;
             }
         }
@@ -181,7 +181,7 @@ impl NonMembershipProof {
             if !sproof.verify() {
                 return false;
             }
-            if !(key < skey.as_str()) {
+            if key >= skey.as_str() {
                 return false;
             }
         }
@@ -251,10 +251,10 @@ impl UpdateResponse {
     /// membership holds for old/new values respectively when provided.
     pub fn verify_update(&self) -> bool {
         // verify pre proof if present
-        if let Some(pre_p) = &self.pre_proof {
-            if !pre_p.verify() {
-                return false;
-            }
+        if let Some(pre_p) = &self.pre_proof
+            && !pre_p.verify()
+        {
+            return false;
         }
 
         // verify post proof
@@ -276,12 +276,11 @@ impl UpdateResponse {
         }
 
         // verify accumulator membership: pre (old) and post (new)
-        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness) {
-            if let Some(_old) = &self.old_fid {
-                if !acc::Acc::verify_membership(acc, w, &self.key) {
-                    return false;
-                }
-            }
+        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
+            && let Some(_old) = &self.old_fid
+            && !acc::Acc::verify_membership(acc, w, &self.key)
+        {
+            return false;
         }
 
         if !acc::Acc::verify_membership(
@@ -347,10 +346,10 @@ impl DeleteResponse {
     /// and pre-acc membership holds for the deleted key when provided.
     pub fn verify_delete(&self) -> bool {
         // verify pre proof if present
-        if let Some(pre_p) = &self.pre_proof {
-            if !pre_p.verify() {
-                return false;
-            }
+        if let Some(pre_p) = &self.pre_proof
+            && !pre_p.verify()
+        {
+            return false;
         }
 
         // verify post proof
@@ -372,12 +371,11 @@ impl DeleteResponse {
         }
 
         // verify accumulator membership for pre-state (old element)
-        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness) {
-            if let Some(_old) = &self.old_fid {
-                if !acc::Acc::verify_membership(acc, w, &self.key) {
-                    return false;
-                }
-            }
+        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
+            && let Some(_old) = &self.old_fid
+            && !acc::Acc::verify_membership(acc, w, &self.key)
+        {
+            return false;
         }
 
         true

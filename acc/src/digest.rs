@@ -12,13 +12,13 @@ pub struct Digest(pub [u8; DIGEST_LEN]);
 
 impl fmt::Display for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(&self.0))
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 
 impl fmt::Debug for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(&self.0))
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 
@@ -30,7 +30,7 @@ impl Serialize for Digest {
         S: Serializer,
     {
         if serializer.is_human_readable() {
-            serializer.serialize_str(&hex::encode(&self.0))
+            serializer.serialize_str(&hex::encode(self.0))
         } else {
             let mut state = serializer.serialize_tuple_struct("Digest", 1)?;
             state.serialize_field(&self.0)?;

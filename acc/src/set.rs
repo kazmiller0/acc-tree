@@ -28,11 +28,11 @@ impl<T: SetElement> MultiSet<T> {
     }
 
     pub fn from_vec(input: Vec<T>) -> Self {
-        Self::from_iter(input.into_iter())
+        Self::from_iter(input)
     }
 
     pub fn from_tuple_vec(input: Vec<(T, u32)>) -> Self {
-        Self::from_iter(input.into_iter())
+        Self::from_iter(input)
     }
 
     pub fn is_intersected_with(&self, other: &Self) -> bool {
@@ -53,7 +53,7 @@ impl<T: SetElement> Deref for MultiSet<T> {
     }
 }
 
-impl<'a, 'b, T: SetElement> Add<&'a MultiSet<T>> for &'b MultiSet<T> {
+impl<'a, T: SetElement> Add<&'a MultiSet<T>> for &MultiSet<T> {
     type Output = MultiSet<T>;
 
     fn add(self, other: &'a MultiSet<T>) -> MultiSet<T> {
@@ -65,7 +65,7 @@ impl<'a, 'b, T: SetElement> Add<&'a MultiSet<T>> for &'b MultiSet<T> {
     }
 }
 
-impl<'a, 'b, T: SetElement> BitOr<&'a MultiSet<T>> for &'b MultiSet<T> {
+impl<'a, T: SetElement> BitOr<&'a MultiSet<T>> for &MultiSet<T> {
     type Output = MultiSet<T>;
 
     fn bitor(self, other: &'a MultiSet<T>) -> MultiSet<T> {
@@ -77,7 +77,7 @@ impl<'a, 'b, T: SetElement> BitOr<&'a MultiSet<T>> for &'b MultiSet<T> {
     }
 }
 
-impl<'a, 'b, T: SetElement> BitAnd<&'a MultiSet<T>> for &'b MultiSet<T> {
+impl<'a, T: SetElement> BitAnd<&'a MultiSet<T>> for &MultiSet<T> {
     type Output = MultiSet<T>;
 
     fn bitand(self, other: &'a MultiSet<T>) -> MultiSet<T> {

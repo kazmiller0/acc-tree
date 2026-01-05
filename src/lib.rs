@@ -29,8 +29,8 @@ pub fn leaf_hash(key: &str, fid: &str) -> Hash {
 
 pub fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
     let mut hasher = Sha256::new();
-    hasher.update(&left);
-    hasher.update(&right);
+    hasher.update(left);
+    hasher.update(right);
     hasher.finalize().into()
 }
 
@@ -122,11 +122,10 @@ impl Node {
                 if *deleted {
                     return v.into_iter();
                 }
-                if let Some(ex) = exclude_key {
-                    if ex == key.as_str() {
+                if let Some(ex) = exclude_key
+                    && ex == key.as_str() {
                         return v.into_iter();
                     }
-                }
                 v.push((key.clone(), fid.clone()));
             }
             Node::NonLeaf { left, right, .. } => {
@@ -462,6 +461,12 @@ fn merge_nodes(left: Box<Node>, right: Box<Node>) -> Box<Node> {
 
 pub struct AccumulatorTree {
     pub roots: Vec<Box<Node>>,
+}
+
+impl Default for AccumulatorTree {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AccumulatorTree {

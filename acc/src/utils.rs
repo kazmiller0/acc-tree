@@ -13,7 +13,9 @@ pub fn try_digest_to_prime_field<F: PrimeField>(input: &Digest) -> Option<F> {
     for v in num.as_mut().iter_mut().skip(3) {
         *v = 0;
     }
-    num.as_mut().get_mut(3).map(|v| *v &= 0x00ff_ffff_ffff_ffff);
+    if let Some(v) = num.as_mut().get_mut(3) {
+        *v &= 0x00ff_ffff_ffff_ffff;
+    }
     F::from_repr(num)
 }
 
@@ -34,7 +36,7 @@ pub fn xgcd<'a, F: PrimeField>(
     let mut y1 = DensePolynomial::<F>::zero();
     while !a.is_zero() {
         let (q, r) = b.divide_with_q_and_r(&a)?;
-        b = a.into();
+        b = a;
         a = r.into();
         let y1old = y1;
         y1 = &y0 - &(&q * &y1old);

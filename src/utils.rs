@@ -1,5 +1,4 @@
 use crate::{AccumulatorTree, Node};
-use acc::MultiSet;
 
 /// 打印森林的完整状态
 pub fn print_tree(tree: &AccumulatorTree) {
