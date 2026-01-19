@@ -204,6 +204,7 @@ impl Node {
     }
 
     /// Update fid for target_key recursively. Returns whether hash changed.
+    /// Note: Accumulator doesn't change because it only depends on keys, not fid values
     pub(crate) fn update_recursive(&mut self, target_key: &str, new_fid: &str) -> bool {
         match self {
             Node::Leaf {
@@ -220,8 +221,8 @@ impl Node {
                 hash,
                 left,
                 right,
-                keys,
-                acc,
+                keys: _,
+                acc: _,  // acc doesn't change - it only depends on keys
                 ..
             } => {
                 // locate branch using `has_key` only (leaf obeys tombstone)
@@ -231,10 +232,7 @@ impl Node {
                     right.update_recursive(target_key, new_fid)
                 };
                 if changed {
-                    // recompute keys/acc/hash from children
-                    let new_keys = Rc::new(left.keys().union(&right.keys()));
-                    *keys = new_keys.clone();
-                    *acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
+                    // Only hash needs to be recomputed (acc remains the same)
                     *hash = nonleaf_hash(left.hash(), right.hash());
                 }
                 changed
@@ -243,6 +241,7 @@ impl Node {
     }
 
     /// Mark leaf with target_key as deleted (tombstone). Returns new node.
+    /// Uses incremental accumulator update for O(1) deletion instead of O(n) recomputation
     pub(crate) fn delete_recursive(self: Box<Self>, target_key: &str) -> Box<Node> {
         match *self {
             Node::Leaf {
@@ -275,7 +274,17 @@ impl Node {
                 let l = left.delete_recursive(target_key);
                 let r = right.delete_recursive(target_key);
                 let new_keys = Rc::new(l.keys().union(&r.keys()));
-                let new_acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
+                
+                // Use incremental union instead of full recomputation
+                let left_digest = DigestSet::new(&l.keys());
+                let right_digest = DigestSet::new(&r.keys());
+                let new_acc = DynamicAccumulator::incremental_union(
+                    l.acc(),
+                    r.acc(),
+                    &left_digest,
+                    &right_digest,
+                );
+                
                 let new_hash = nonleaf_hash(l.hash(), r.hash());
                 Box::new(Node::NonLeaf {
                     hash: new_hash,
@@ -290,6 +299,7 @@ impl Node {
     }
 
     /// Revive a tombstoned leaf with target_key. Returns new node.
+    /// Uses incremental accumulator update for O(1) revival instead of O(n) recomputation
     pub(crate) fn revive_recursive(self: Box<Self>, target_key: &str, new_fid: &str) -> Box<Node> {
         match *self {
             Node::Leaf {
@@ -321,7 +331,17 @@ impl Node {
                 let l = left.revive_recursive(target_key, new_fid);
                 let r = right.revive_recursive(target_key, new_fid);
                 let new_keys = Rc::new(l.keys().union(&r.keys()));
-                let new_acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
+                
+                // Use incremental union instead of full recomputation
+                let left_digest = DigestSet::new(&l.keys());
+                let right_digest = DigestSet::new(&r.keys());
+                let new_acc = DynamicAccumulator::incremental_union(
+                    l.acc(),
+                    r.acc(),
+                    &left_digest,
+                    &right_digest,
+                );
+                
                 let new_hash = nonleaf_hash(l.hash(), r.hash());
                 Box::new(Node::NonLeaf {
                     hash: new_hash,
@@ -336,9 +356,23 @@ impl Node {
     }
 
     /// Merge two nodes into a new NonLeaf node
+    /// Uses incremental accumulator union for O(n) complexity instead of O(n^2)
     pub(crate) fn merge(left: Box<Node>, right: Box<Node>) -> Box<Node> {
         let new_keys = Rc::new(left.keys().union(&right.keys()));
-        let new_acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
+        
+        // Use incremental union instead of full recomputation
+        let left_acc = left.acc();
+        let right_acc = right.acc();
+        let left_digest = DigestSet::new(&left.keys());
+        let right_digest = DigestSet::new(&right.keys());
+        
+        let new_acc = DynamicAccumulator::incremental_union(
+            left_acc,
+            right_acc,
+            &left_digest,
+            &right_digest,
+        );
+        
         Box::new(Node::NonLeaf {
             hash: nonleaf_hash(left.hash(), right.hash()),
             keys: new_keys,

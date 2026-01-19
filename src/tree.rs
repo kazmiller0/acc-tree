@@ -101,13 +101,13 @@ impl AccumulatorTree {
                 return None; // Key exists, cannot create non-membership proof
             }
         }
-        
+
         // Collect all keys from all roots to build the complete set
         let mut all_keys = accumulator_ads::Set::<String>::new();
         for root in &self.roots {
             all_keys = all_keys.union(&root.keys());
         }
-        
+
         // Calculate the global accumulator for all keys
         let global_acc = if all_keys.is_empty() {
             // Empty tree: use empty accumulator
@@ -117,7 +117,7 @@ impl AccumulatorTree {
             let digest_set = accumulator_ads::DigestSet::new(&all_keys);
             accumulator_ads::DynamicAccumulator::calculate_commitment(&digest_set)
         };
-        
+
         // Generate non-membership proof using accumulator's Bézout approach
         crate::proof::NonMembershipProof::new(key.to_string(), global_acc, &all_keys)
     }
@@ -146,7 +146,9 @@ impl AccumulatorTree {
                 let key_digest_set = accumulator_ads::DigestSet::new(&key_set);
                 let key_elem = *key_digest_set.iter().next().unwrap();
                 let acc_inst = accumulator_ads::DynamicAccumulator { acc_value: acc_val };
-                let acc_witness = acc_inst.compute_membership_witness(key_elem).unwrap_or(acc_val);
+                let acc_witness = acc_inst
+                    .compute_membership_witness(key_elem)
+                    .unwrap_or(acc_val);
                 return crate::proof::QueryResponse::new(
                     Some(fid),
                     Some(proof),

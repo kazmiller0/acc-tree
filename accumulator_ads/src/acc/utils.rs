@@ -297,3 +297,27 @@ pub fn poly_to_g2(poly: DensePolynomial<Fr>) -> G2Affine {
 
     VariableBaseMSM::multi_scalar_mul(&bases[..], &scalars[..]).into_affine()
 }
+
+/// Solves A*P1 + B*P2 = 1 (GCD normalized).
+/// Returns (A, B) such that A*P1 + B*P2 = 1.
+pub fn solve_bezout_identity(
+    p1: DensePolynomial<Fr>,
+    p2: DensePolynomial<Fr>,
+) -> anyhow::Result<(DensePolynomial<Fr>, DensePolynomial<Fr>)> {
+    let (g, a, b) = xgcd(p1, p2).ok_or_else(|| anyhow::anyhow!("XGCD failed"))?;
+
+    if g.degree() != 0 {
+        return Err(anyhow::anyhow!("Polynomials are not coprime"));
+    }
+
+    let g_val = g.coeffs[0];
+    let g_inv = g_val
+        .inverse()
+        .ok_or_else(|| anyhow::anyhow!("GCD constant has no inverse"))?;
+
+    let scale_poly = |poly: DensePolynomial<Fr>| -> DensePolynomial<Fr> {
+        DensePolynomial::from_coefficients_vec(poly.coeffs.into_iter().map(|c| c * g_inv).collect())
+    };
+
+    Ok((scale_poly(a), scale_poly(b)))
+}

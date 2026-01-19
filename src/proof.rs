@@ -1,5 +1,5 @@
 use crate::{Hash, leaf_hash, nonleaf_hash};
-use accumulator_ads::{G1Affine, DigestSet};
+use accumulator_ads::{DigestSet, G1Affine};
 
 // Helper to verify membership using pairing
 // SECURITY FIX: This function now uses ONLY public parameters (g2^s) for verification.
@@ -11,28 +11,28 @@ fn verify_membership_internal(acc: &G1Affine, witness: &G1Affine, key: &String) 
     use accumulator_ads::acc::utils::digest_to_prime_field;
     use accumulator_ads::digest::Digestible;
     use ark_bls12_381::{Bls12_381 as Curve, G2Affine};
-    use ark_ec::{PairingEngine, AffineCurve, ProjectiveCurve};
+    use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
     use std::ops::Neg;
-    
+
     // Get the Fr element for the key
     let key_digest = key.to_digest();
     let key_fr: Fr = digest_to_prime_field(&key_digest);
-    
+
     let g2 = G2Affine::prime_subgroup_generator();
     let g2_s = get_g2s(1_usize); // Get g2^s from public parameters (loaded from trusted setup)
-    
+
     // Compute g2^(-element)
     let g2_neg_elem = g2.mul(key_fr.neg()).into_affine();
-    
+
     // Compute g2^(s-element) = g2^s * g2^{-element} using group operation
     let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
-    
+
     // Verify: e(witness, g2^(s-element)) == e(acc, g2)
     // This verifies that witness^(s-element) = acc, proving membership
     // WITHOUT requiring knowledge of the secret s!
     let lhs = Curve::pairing(*witness, g2_s_minus_elem);
     let rhs = Curve::pairing(*acc, g2);
-    
+
     lhs == rhs
 }
 
@@ -196,17 +196,21 @@ pub struct NonMembershipProof {
 
 impl NonMembershipProof {
     /// Create a new non-membership proof for a key against the given set
-    pub fn new(key: String, accumulator: G1Affine, all_keys_set: &accumulator_ads::Set<String>) -> Option<Self> {
-        use accumulator_ads::digest::Digestible;
+    pub fn new(
+        key: String,
+        accumulator: G1Affine,
+        all_keys_set: &accumulator_ads::Set<String>,
+    ) -> Option<Self> {
         use accumulator_ads::acc::utils::digest_to_prime_field;
-        
+        use accumulator_ads::digest::Digestible;
+
         // Convert key to field element
         let key_digest = key.to_digest();
         let key_elem = digest_to_prime_field(&key_digest);
-        
+
         // Convert all keys to digest set
         let digest_set = DigestSet::new(all_keys_set);
-        
+
         // Generate cryptographic non-membership proof using Bézout coefficients
         match accumulator_ads::NonMembershipProof::new(key_elem, &digest_set) {
             Ok(acc_proof) => Some(Self {
@@ -225,7 +229,7 @@ impl NonMembershipProof {
         if self.key != expected_key {
             return false;
         }
-        
+
         // Verify the cryptographic non-membership proof
         // This checks: A(s)*P(s) + B(s)*(s-x) = 1 using pairings
         self.acc_proof.verify(self.accumulator)

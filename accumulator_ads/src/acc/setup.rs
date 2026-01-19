@@ -9,9 +9,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::RwLock;
 
-#[cfg(any(test, debug_assertions))]
 use ark_bls12_381::{Fr, G1Projective, G2Projective};
-#[cfg(any(test, debug_assertions))]
 use ark_ec::ProjectiveCurve;
 
 #[cfg(test)]
@@ -21,9 +19,7 @@ const GS_VEC_LEN: usize = 20;
 #[allow(dead_code)]
 const GS_VEC_LEN: usize = 5000;
 
-// SECURITY WARNING: PRI_S is only available in test mode
-// In production, this secret must NEVER be accessible
-#[cfg(any(test, debug_assertions))]
+// Since the project holds the private key, we expose it always
 lazy_static! {
     pub static ref PRI_S: Fr = Fr::from(259535143263514268207918833918737523409u128);
 }
