@@ -81,7 +81,7 @@ fn test_node_hash_and_collect() {
     assert!(l.has_key("A"));
     assert!(!l.has_key("B"));
 
-    let merged = Node::merge(l.clone(), r.clone());
+    let merged = AccumulatorTree::test_merge_nodes(l.clone(), r.clone());
     // merged level 应为子节点 level + 1
     assert_eq!(merged.level(), 1);
 
@@ -95,8 +95,8 @@ fn test_node_hash_and_collect() {
     } = &*merged
     {
         assert_eq!(
-            hash,
-            &nonleaf_hash(left.as_ref().hash(), right.as_ref().hash())
+            *hash,
+            nonleaf_hash(left.as_ref().hash(), right.as_ref().hash())
         );
         let mut collected: Vec<_> = left
             .collect_leaves(None)
@@ -151,7 +151,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
 
     // insert
     tree.insert("X".to_string(), "F1".to_string());
-    assert_eq!(tree.get("X"), Some("F1".to_string()));
+    assert_eq!(tree.select("X"), Some("F1".to_string()));
 
     // find the leaf node and check hash/acc consistency
     let mut found_leaf: Option<&Node> = None;
@@ -177,7 +177,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
     // update
     let prev_hash = leaf.hash();
     tree.update("X", "F1_upd".to_string());
-    assert_eq!(tree.get("X"), Some("F1_upd".to_string()));
+    assert_eq!(tree.select("X"), Some("F1_upd".to_string()));
     // locate updated leaf and check hash changed and acc updated
     let mut updated_leaf: Option<&Node> = None;
     for r in &tree.roots {
@@ -192,7 +192,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
 
     // delete
     tree.delete("X");
-    assert_eq!(tree.get("X"), None);
+    assert_eq!(tree.select("X"), None);
     // find tombstoned leaf and assert tombstone semantics
     let mut tomb_leaf: Option<&Node> = None;
     for r in &tree.roots {
@@ -210,7 +210,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
 
     // revive by inserting same key again
     tree.insert("X".to_string(), "F2".to_string());
-    assert_eq!(tree.get("X"), Some("F2".to_string()));
+    assert_eq!(tree.select("X"), Some("F2".to_string()));
     // ensure there's a non-deleted leaf for X
     let mut live_leaf: Option<&Node> = None;
     for r in &tree.roots {
@@ -225,7 +225,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
     } = lf
     {
         assert!(!*deleted);
-        assert_eq!(tree.get(key.as_str()), Some(fid.clone()));
+        assert_eq!(tree.select(key.as_str()), Some(fid.clone()));
         assert_eq!(lf.hash(), leaf_hash(key, fid));
         assert_eq!(lf.acc(), cal_acc_g1(&lf.keys()));
     }
@@ -280,7 +280,7 @@ fn test_edge_cases_empty_tree_and_duplicates_and_updates_on_deleted() {
     init_test_params();
     let mut tree = AccumulatorTree::new();
     // empty tree ops should not panic
-    assert_eq!(tree.get("nope"), None);
+    assert_eq!(tree.select("nope"), None);
     tree.update("nope", "v".to_string());
     tree.delete("nope");
 
@@ -288,7 +288,7 @@ fn test_edge_cases_empty_tree_and_duplicates_and_updates_on_deleted() {
     tree.insert("D".to_string(), "F1".to_string());
     tree.insert("D".to_string(), "F2".to_string());
     // duplicate insert does not overwrite an existing non-deleted leaf (use update to change)
-    assert_eq!(tree.get("D"), Some("F1".to_string()));
+    assert_eq!(tree.select("D"), Some("F1".to_string()));
     // collect unique keys should contain only one D
     let mut keys: Vec<String> = tree
         .roots
@@ -308,9 +308,9 @@ fn test_edge_cases_empty_tree_and_duplicates_and_updates_on_deleted() {
     // update deleted key should be no-op
     tree.delete("D");
     // ensure it's tombstoned
-    assert_eq!(tree.get("D"), None);
+    assert_eq!(tree.select("D"), None);
     tree.update("D", "should_not_apply".to_string());
-    assert_eq!(tree.get("D"), None);
+    assert_eq!(tree.select("D"), None);
 }
 
 #[test]
@@ -342,13 +342,13 @@ fn test_tombstone_propagation_and_normalize_behavior() {
         deleted: false,
     });
 
-    let left = Node::merge(a, b); // level 1
-    let right = Node::merge(c, d); // level 1
-    let root = Node::merge(left.clone(), right.clone()); // level 2
+    let left = AccumulatorTree::test_merge_nodes(a, b); // level 1
+    let right = AccumulatorTree::test_merge_nodes(c, d); // level 1
+    let root = AccumulatorTree::test_merge_nodes(left.clone(), right.clone()); // level 2
 
     // delete both leaves in left subtree
-    let root_after = root.delete_recursive("a");
-    let root_after = root_after.delete_recursive("b");
+    let root_after = AccumulatorTree::test_delete_recursive(root, "a");
+    let root_after = AccumulatorTree::test_delete_recursive(root_after, "b");
 
     // find left subtree (root_after.left)
     if let Node::NonLeaf { left, right: _, .. } = &*root_after {
@@ -413,16 +413,16 @@ fn test_revive_updates_nonleaf_for_deep_tree() {
         level: 0,
         deleted: false,
     });
-    let left = Node::merge(a, b);
-    let right = Node::merge(c, d);
-    let mut root = Node::merge(left, right);
+    let left = AccumulatorTree::test_merge_nodes(a, b);
+    let right = AccumulatorTree::test_merge_nodes(c, d);
+    let mut root = AccumulatorTree::test_merge_nodes(left, right);
 
     // delete a and b (left subtree becomes empty keys)
-    root = root.delete_recursive("a");
-    root = root.delete_recursive("b");
+    root = AccumulatorTree::test_delete_recursive(root, "a");
+    root = AccumulatorTree::test_delete_recursive(root, "b");
 
     // revive a by inserting into the outer tree via revive_recursive semantics
-    let revived = root.revive_recursive("a", "fa_new");
+    let revived = AccumulatorTree::test_revive_recursive(root, "a", "fa_new");
     // verify that after revive, acc/hash for the parent nonleaf reflect the restored key
     if let Node::NonLeaf {
         left,
@@ -434,7 +434,7 @@ fn test_revive_updates_nonleaf_for_deep_tree() {
     {
         // keys should now contain "a"
         assert!(keys.contains(&"a".to_string()));
-        assert_eq!(acc, &cal_acc_g1(&keys.as_ref().clone()));
+        assert_eq!(*acc, cal_acc_g1(&keys.as_ref().clone()));
         // hash of left should now not be the tombstone-only hash
         assert_ne!(left.hash(), empty_hash());
     } else {
@@ -448,11 +448,11 @@ fn test_special_key_and_fid_boundaries() {
     let mut tree = AccumulatorTree::new();
     // empty key and fid
     tree.insert("".to_string(), "".to_string());
-    assert_eq!(tree.get(""), Some("".to_string()));
+    assert_eq!(tree.select(""), Some("".to_string()));
     // special chars
     let special = "\n\0!@#$%^&*()_+中文".to_string();
     tree.insert(special.clone(), "fid_special".to_string());
-    assert_eq!(tree.get(&special), Some("fid_special".to_string()));
+    assert_eq!(tree.select(&special), Some("fid_special".to_string()));
 
     // verify no panics and acc/hash correctness
     for r in &tree.roots {
@@ -483,15 +483,15 @@ fn test_tree_lifecycle() {
     }
 
     // 基本查询
-    assert_eq!(tree.get("K3"), Some("F3".to_string()));
+    assert_eq!(tree.select("K3"), Some("F3".to_string()));
 
     // 更新并验证
     tree.update("K3", "F3_upd".to_string());
-    assert_eq!(tree.get("K3"), Some("F3_upd".to_string()));
+    assert_eq!(tree.select("K3"), Some("F3_upd".to_string()));
 
     // 删除并验证
     tree.delete("K2");
-    assert_eq!(tree.get("K2"), None);
+    assert_eq!(tree.select("K2"), None);
 
     // 收集当前键并校验数量（应为 7）
     let mut keys: Vec<String> = Vec::new();
@@ -520,7 +520,7 @@ fn test_bulk_kv_operations() {
 
     // verify basic gets
     for i in 0..n {
-        assert_eq!(tree.get(&format!("K{}", i)), Some(format!("F{}", i)));
+        assert_eq!(tree.select(&format!("K{}", i)), Some(format!("F{}", i)));
     }
 
     // update every 10th entry
@@ -528,7 +528,7 @@ fn test_bulk_kv_operations() {
         tree.update(&format!("K{}", i), format!("F{}_upd", i));
     }
     for i in (0..n).step_by(10) {
-        assert_eq!(tree.get(&format!("K{}", i)), Some(format!("F{}_upd", i)));
+        assert_eq!(tree.select(&format!("K{}", i)), Some(format!("F{}_upd", i)));
     }
 
     // delete every 7th entry
@@ -551,7 +551,7 @@ fn test_bulk_kv_operations() {
 
     // ensure deleted keys are gone
     for i in (0..n).step_by(7) {
-        assert_eq!(tree.get(&format!("K{}", i)), None);
+        assert_eq!(tree.select(&format!("K{}", i)), None);
     }
 }
 
@@ -571,7 +571,7 @@ fn test_bulk_kv_operations_large() {
 
     // verify basic gets for a sample to reduce runtime
     for i in 0..n {
-        assert_eq!(tree.get(&format!("K{}", i)), Some(format!("F{}", i)));
+        assert_eq!(tree.select(&format!("K{}", i)), Some(format!("F{}", i)));
     }
 
     // update every 10th entry
@@ -579,7 +579,7 @@ fn test_bulk_kv_operations_large() {
         tree.update(&format!("K{}", i), format!("F{}_upd", i));
     }
     for i in (0..n).step_by(10) {
-        assert_eq!(tree.get(&format!("K{}", i)), Some(format!("F{}_upd", i)));
+        assert_eq!(tree.select(&format!("K{}", i)), Some(format!("F{}_upd", i)));
     }
 
     // delete every 7th entry
@@ -602,7 +602,7 @@ fn test_bulk_kv_operations_large() {
 
     // ensure deleted keys are gone
     for i in (0..n).step_by(7) {
-        assert_eq!(tree.get(&format!("K{}", i)), None);
+        assert_eq!(tree.select(&format!("K{}", i)), None);
     }
 }
 
@@ -820,12 +820,12 @@ fn test_randomized_property_operations_large() {
 }
 
 #[test]
-fn test_get_with_proof_verifies() {
+fn test_select_with_proof_verifies() {
     init_test_params();
     let mut tree = AccumulatorTree::new();
     tree.insert("P".to_string(), "PV".to_string());
 
-    let qr = tree.get_with_proof("P");
+    let qr = tree.select_with_proof("P");
     assert_eq!(qr.fid, Some("PV".to_string()));
     let proof = qr.proof.as_ref().expect("proof must be present");
     // verify the proof recomputes the root correctly
@@ -901,13 +901,13 @@ fn test_delete_with_proof() {
     assert!(resp.verify_delete());
 
     // ensure key is gone
-    assert_eq!(tree.get("Dkey"), None);
+    assert_eq!(tree.select("Dkey"), None);
 }
 
 #[test]
-fn test_get_with_nonmembership_when_absent() {    init_test_params();    let tree = AccumulatorTree::new();
+fn test_select_with_nonmembership_when_absent() {    init_test_params();    let tree = AccumulatorTree::new();
     // empty tree: key absent
-    let qr = tree.get_with_proof("Z");
+    let qr = tree.select_with_proof("Z");
     assert_eq!(qr.fid, None);
     // nonmembership proof should be present (though pred/succ may be None)
     let nm = qr.nonmembership.expect("nonmembership present");
@@ -920,7 +920,7 @@ fn test_insert_with_proof() {
     let mut tree = AccumulatorTree::new();
 
     // ensure key absent before insert
-    assert_eq!(tree.get("I"), None);
+    assert_eq!(tree.select("I"), None);
 
     // capture insert with proof
     let resp = tree.insert_with_proof("I".to_string(), "IV".to_string());
