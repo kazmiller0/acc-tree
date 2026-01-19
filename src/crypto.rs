@@ -1,4 +1,4 @@
-use accumulator_ads::{DynamicAccumulator, DigestSet, G1Affine, Set};
+use accumulator_ads::{DigestSet, DynamicAccumulator, G1Affine, Set};
 use lazy_static::lazy_static;
 use sha2::{Digest, Sha256};
 
@@ -6,7 +6,8 @@ pub type Hash = [u8; 32];
 
 lazy_static! {
     pub static ref EMPTY_HASH: Hash = leaf_hash("", "");
-    pub static ref EMPTY_ACC: G1Affine = DynamicAccumulator::calculate_commitment(&DigestSet::new(&Set::<String>::new()));
+    pub static ref EMPTY_ACC: G1Affine =
+        DynamicAccumulator::calculate_commitment(&DigestSet::new(&Set::<String>::new()));
 }
 
 pub fn empty_hash() -> Hash {

@@ -9,7 +9,7 @@
 //! - Pure math algorithms (e.g., XGCD, FixedBasePow)
 //! - Low-level type conversions (e.g., Digest -> Field)
 
-use crate::acc::setup::{get_g1s, get_g2s, G1_S_VEC, G2_S_VEC};
+use crate::acc::setup::{get_g1s, get_g2s};
 use crate::digest::{Digest, Digestible};
 use ark_bls12_381::{Fr, G1Affine, G2Affine};
 use ark_ec::{msm::VariableBaseMSM, ProjectiveCurve};
@@ -258,15 +258,14 @@ pub fn poly_to_g1(poly: DensePolynomial<Fr>) -> G1Affine {
     (0..idxes.len())
         .into_par_iter()
         .map(|i| {
-            G1_S_VEC.get(i).copied().unwrap_or_else(|| {
-                trace!("access g1 pub key at {}", i);
-                get_g1s(Fr::from(i as u64))
-            })
+            let idx = idxes[i];
+            trace!("access g1 pub key at {}", idx);
+            get_g1s(idx)
         })
         .collect_into_vec(&mut bases);
     (0..idxes.len())
         .into_par_iter()
-        .map(|i| poly.coeffs[i].into_repr())
+        .map(|i| poly.coeffs[idxes[i]].into_repr())
         .collect_into_vec(&mut scalars);
 
     VariableBaseMSM::multi_scalar_mul(&bases[..], &scalars[..]).into_affine()
@@ -286,15 +285,14 @@ pub fn poly_to_g2(poly: DensePolynomial<Fr>) -> G2Affine {
     (0..idxes.len())
         .into_par_iter()
         .map(|i| {
-            G2_S_VEC.get(i).copied().unwrap_or_else(|| {
-                trace!("access g2 pub key at {}", i);
-                get_g2s(Fr::from(i as u64))
-            })
+            let idx = idxes[i];
+            trace!("access g2 pub key at {}", idx);
+            get_g2s(idx)
         })
         .collect_into_vec(&mut bases);
     (0..idxes.len())
         .into_par_iter()
-        .map(|i| poly.coeffs[i].into_repr())
+        .map(|i| poly.coeffs[idxes[i]].into_repr())
         .collect_into_vec(&mut scalars);
 
     VariableBaseMSM::multi_scalar_mul(&bases[..], &scalars[..]).into_affine()

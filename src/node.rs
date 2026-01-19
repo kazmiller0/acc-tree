@@ -1,4 +1,4 @@
-use accumulator_ads::{DynamicAccumulator, DigestSet, G1Affine, Set};
+use accumulator_ads::{DigestSet, DynamicAccumulator, G1Affine, Set};
 use std::rc::Rc;
 
 use crate::crypto::{Hash, empty_acc, empty_hash, leaf_hash, nonleaf_hash};
@@ -52,7 +52,9 @@ impl Node {
                     // empty set accumulator
                     empty_acc()
                 } else {
-                    DynamicAccumulator::calculate_commitment(&DigestSet::new(&Set::from_vec(vec![key.clone()])))
+                    DynamicAccumulator::calculate_commitment(&DigestSet::new(&Set::from_vec(vec![
+                        key.clone(),
+                    ])))
                 }
             }
             Node::NonLeaf { acc, .. } => *acc,

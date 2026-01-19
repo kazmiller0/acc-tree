@@ -13,7 +13,8 @@ pub type DigestSet = digest_set::DigestSet<Fr>;
 // Re-export main components
 pub use dynamic_accumulator::{DynamicAccumulator, QueryResult};
 pub use proofs::*;
-pub use setup::{E_G_G, G1_S_VEC, G2_S_VEC, PRI_S};
+pub use setup::{E_G_G, PublicParameters, init_public_parameters, init_public_parameters_direct, 
+                get_public_parameters, get_g1s, get_g2s, get_g1s_vec, get_g2s_vec};
 
 #[cfg(test)]
 mod tests {

@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::acc::digest_set::DigestSet;
 use crate::acc::dynamic_accumulator::DynamicAccumulator;
 use crate::acc::serde_impl;
-use crate::acc::setup::{E_G_G, G1_S_VEC, G2_POWER, PRI_S};
+use crate::acc::setup::{E_G_G, get_g1s, get_g2s};
 use ark_ec::ProjectiveCurve;
+use std::ops::Neg;
 
 /// A proof that an 'add' operation was performed correctly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,12 +36,21 @@ impl AddProof {
     }
 
     /// Verifies that the new accumulator is the result of adding the element to the old one.
+    /// Uses PUBLIC pairing verification: e(new_acc, g2) = e(old_acc, g2^(s-element))
+    /// This is equivalent to: new_acc = old_acc^(s-element)
+    /// 
+    /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self) -> bool {
-        // Compute g2^(s-element)
-        let s_minus_elem: Fr = *PRI_S - self.element;
-        let g2_s_minus_elem = G2_POWER.apply(&s_minus_elem);
+        let g2 = G2Affine::prime_subgroup_generator();
+        let g2_s = get_g2s(1_usize); // g2^s from public parameters
+        
+        // Compute g2^(-element) = g2^{-element}
+        let g2_neg_elem = g2.mul(self.element.neg()).into_affine();
+        
+        // Compute g2^(s-element) = g2^s * g2^{-element}
+        let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
 
-        let lhs = Curve::pairing(self.new_acc_value, G2Affine::prime_subgroup_generator());
+        let lhs = Curve::pairing(self.new_acc_value, g2);
         let rhs = Curve::pairing(self.old_acc_value, g2_s_minus_elem);
 
         lhs == rhs
@@ -73,13 +83,22 @@ impl DeleteProof {
     }
 
     /// Verifies that the new accumulator is the result of deleting the element from the old one.
+    /// Uses PUBLIC pairing verification: e(new_acc, g2^(s-element)) = e(old_acc, g2)
+    /// This is equivalent to: new_acc^(s-element) = old_acc
+    /// 
+    /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self) -> bool {
-        // Compute g2^(s-element)
-        let s_minus_elem: Fr = *PRI_S - self.element;
-        let g2_s_minus_elem = G2_POWER.apply(&s_minus_elem);
+        let g2 = G2Affine::prime_subgroup_generator();
+        let g2_s = get_g2s(1_usize); // g2^s from public parameters
+        
+        // Compute g2^(-element)
+        let g2_neg_elem = g2.mul(self.element.neg()).into_affine();
+        
+        // Compute g2^(s-element) = g2^s * g2^{-element}
+        let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
 
         let lhs = Curve::pairing(self.new_acc_value, g2_s_minus_elem);
-        let rhs = Curve::pairing(self.old_acc_value, G2Affine::prime_subgroup_generator());
+        let rhs = Curve::pairing(self.old_acc_value, g2);
 
         lhs == rhs
     }
@@ -115,14 +134,19 @@ impl UpdateProof {
 
     /// Verifies that the new accumulator is the result of updating old_element to new_element.
     /// Verification: e(new_acc, g2^(s-old_element)) = e(old_acc, g2^(s-new_element))
+    /// 
+    /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self) -> bool {
+        let g2 = G2Affine::prime_subgroup_generator();
+        let g2_s = get_g2s(1_usize); // g2^s from public parameters
+        
         // Compute g2^(s-old_element)
-        let s_minus_old: Fr = *PRI_S - self.old_element;
-        let g2_s_minus_old = G2_POWER.apply(&s_minus_old);
+        let g2_neg_old = g2.mul(self.old_element.neg()).into_affine();
+        let g2_s_minus_old = (g2_s.into_projective() + g2_neg_old.into_projective()).into_affine();
 
         // Compute g2^(s-new_element)
-        let s_minus_new: Fr = *PRI_S - self.new_element;
-        let g2_s_minus_new = G2_POWER.apply(&s_minus_new);
+        let g2_neg_new = g2.mul(self.new_element.neg()).into_affine();
+        let g2_s_minus_new = (g2_s.into_projective() + g2_neg_new.into_projective()).into_affine();
 
         let lhs = Curve::pairing(self.new_acc_value, g2_s_minus_old);
         let rhs = Curve::pairing(self.old_acc_value, g2_s_minus_new);
@@ -147,13 +171,23 @@ impl MembershipProof {
     }
 
     /// Verifies that this proof is valid for the given accumulator value.
+    /// Uses PUBLIC pairing verification: e(witness, g2^(s-element)) = e(accumulator, g2)
+    /// This verifies that witness^(s-element) = accumulator, proving membership.
+    /// 
+    /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
+    /// This enables PUBLIC VERIFIABILITY - anyone can verify membership.
     pub fn verify(&self, accumulator: G1Affine) -> bool {
-        // Compute g2^(s-element)
-        let s_minus_elem: Fr = *PRI_S - self.element;
-        let g2_s_minus_elem = G2_POWER.apply(&s_minus_elem);
+        let g2 = G2Affine::prime_subgroup_generator();
+        let g2_s = get_g2s(1_usize); // g2^s from public parameters
+        
+        // Compute g2^(-element)
+        let g2_neg_elem = g2.mul(self.element.neg()).into_affine();
+        
+        // Compute g2^(s-element) = g2^s * g2^{-element}
+        let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
 
         let lhs = Curve::pairing(self.witness, g2_s_minus_elem);
-        let rhs = Curve::pairing(accumulator, G2Affine::prime_subgroup_generator());
+        let rhs = Curve::pairing(accumulator, g2);
 
         lhs == rhs
     }
@@ -182,17 +216,23 @@ impl NonMembershipProof {
         })
     }
 
+    /// Verifies non-membership using Bezout's identity: A(s)*P(s) + B(s)*(s-x) = 1
+    /// Check: e(Acc, g2^A) * e(g1^(s-x), g2^B) = e(g1, g2)
+    /// 
+    /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self, acc_value: G1Affine) -> bool {
-        let g1_s = *G1_S_VEC.get(1).expect("Setup not initialized");
         let g1 = G1Affine::prime_subgroup_generator();
-        let g1_elem = g1.mul(self.element).into_affine();
-        let g1_s_minus_elem = g1_s.into_projective() - g1_elem.into_projective();
+        let g1_s = get_g1s(1_usize); // g1^s from public parameters
+        
+        // Compute g1^(-element)
+        let g1_neg_elem = g1.mul(self.element.neg()).into_affine();
+        
+        // Compute g1^(s-element) = g1^s * g1^{-element}
+        let g1_s_minus_elem = (g1_s.into_projective() + g1_neg_elem.into_projective()).into_affine();
 
         // Check: e(Acc, g2^A) * e(g1^(s-x), g2^B) = e(g1, g2)
-        // lhs1 = e(Acc, g2_a)
         let lhs1 = Curve::pairing(acc_value, self.g2_a);
-        // lhs2 = e(g1^{s-elem}, witness)
-        let lhs2 = Curve::pairing(g1_s_minus_elem.into_affine(), self.witness);
+        let lhs2 = Curve::pairing(g1_s_minus_elem, self.witness);
 
         (lhs1 * lhs2) == *E_G_G
     }

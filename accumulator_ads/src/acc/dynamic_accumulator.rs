@@ -2,7 +2,7 @@
 //! intersection, union, and disjointness proofs.
 
 use anyhow::{anyhow, ensure, Context, Result};
-use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Affine};
 use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ff::{Field, One, PrimeField, Zero};
 use ark_poly::{
@@ -12,7 +12,6 @@ use ark_poly::{
 use std::ops::Neg;
 
 use super::proofs::{MembershipProof, NonMembershipProof};
-use super::setup::PRI_S;
 use crate::acc::digest_set::DigestSet;
 use crate::acc::utils::{poly_to_g1, poly_to_g2, xgcd};
 
@@ -22,7 +21,7 @@ pub enum QueryResult {
     /// The element is in the set, and here is the proof.
     Membership(MembershipProof),
     /// The element is not in the set, and here is the proof.
-    NonMembership(NonMembershipProof),
+    NonMembership(Box<NonMembershipProof>),
 }
 
 /// A dynamic cryptographic accumulator based on the Acc scheme.
@@ -32,6 +31,12 @@ pub enum QueryResult {
 pub struct DynamicAccumulator {
     /// The current accumulator value, g1^P(s).
     pub acc_value: G1Affine,
+}
+
+impl Default for DynamicAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DynamicAccumulator {
@@ -68,20 +73,43 @@ impl DynamicAccumulator {
     // ==========================================
     // 1. Add & Delete & Update
     // ==========================================
+    // WARNING: These operations require the secret trapdoor s.
+    // In production, only a trusted accumulator manager should have access.
+    // These are available in test mode for testing purposes.
 
     /// Computes the new accumulator value after adding an element.
     /// acc' = acc^(s-element)
+    /// 
+    /// SECURITY WARNING: This requires the secret trapdoor and should only
+    /// be used in testing or by a trusted accumulator manager.
+    /// Computes the new accumulator value after adding an element.
+    /// acc' = acc^(s-element)
+    /// 
+    /// SECURITY WARNING: This requires the secret trapdoor and should only
+    /// be used in testing or by a trusted accumulator manager.
+    #[cfg(any(test, debug_assertions))]
     pub fn compute_add(&self, element: Fr) -> G1Affine {
+        use super::setup::PRI_S;
         let s_minus_elem: Fr = *PRI_S - element;
         self.acc_value
             .into_projective()
             .mul(s_minus_elem.into_repr())
             .into_affine()
     }
+    
+    #[cfg(not(any(test, debug_assertions)))]
+    pub fn compute_add(&self, _element: Fr) -> G1Affine {
+        panic!("compute_add requires secret trapdoor and is not available in production builds. Use a trusted accumulator manager.");
+    }
 
     /// Computes the new accumulator value after deleting an element.
     /// acc' = acc^(1/(s-element))
+    /// 
+    /// SECURITY WARNING: This requires the secret trapdoor and should only
+    /// be used in testing or by a trusted accumulator manager.
+    #[cfg(any(test, debug_assertions))]
     pub fn compute_delete(&self, element: Fr) -> Result<G1Affine> {
+        use super::setup::PRI_S;
         let s_minus_elem: Fr = *PRI_S - element;
         let inverse = s_minus_elem
             .inverse()
@@ -93,11 +121,21 @@ impl DynamicAccumulator {
             .mul(inverse.into_repr())
             .into_affine())
     }
+    
+    #[cfg(not(any(test, debug_assertions)))]
+    pub fn compute_delete(&self, _element: Fr) -> Result<G1Affine> {
+        Err(anyhow!("compute_delete requires secret trapdoor and is not available in production builds. Use a trusted accumulator manager."))
+    }
 
     /// Computes the new accumulator value after updating an element.
     /// This is equivalent to deleting old_element and adding new_element.
     /// acc' = acc^((s-new_element)/(s-old_element))
+    /// 
+    /// SECURITY WARNING: This requires the secret trapdoor and should only
+    /// be used in testing or by a trusted accumulator manager.
+    #[cfg(any(test, debug_assertions))]
     pub fn compute_update(&self, old_element: Fr, new_element: Fr) -> Result<G1Affine> {
+        use super::setup::PRI_S;
         // First compute the delete operation
         let temp_acc_value = self.compute_delete(old_element)?;
 
@@ -106,6 +144,11 @@ impl DynamicAccumulator {
         Ok(G1Projective::from(temp_acc_value)
             .mul(s_minus_new.into_repr())
             .into_affine())
+    }
+    
+    #[cfg(not(any(test, debug_assertions)))]
+    pub fn compute_update(&self, _old_element: Fr, _new_element: Fr) -> Result<G1Affine> {
+        Err(anyhow!("compute_update requires secret trapdoor and is not available in production builds. Use a trusted accumulator manager."))
     }
 
     // ==========================================
@@ -203,16 +246,10 @@ impl DynamicAccumulator {
             return Err(anyhow!("P_intersect does not divide P2"));
         }
 
-        // Witnesses q1(s), q2(s)
-        let q1_s = q1_poly.evaluate(&*PRI_S);
-        let q2_s = q2_poly.evaluate(&*PRI_S);
-
-        let witness_a = G2Projective::prime_subgroup_generator()
-            .mul(q1_s.into_repr())
-            .into_affine();
-        let witness_b = G2Projective::prime_subgroup_generator()
-            .mul(q2_s.into_repr())
-            .into_affine();
+        // Use poly_to_g2 to convert quotient polynomials to G2 points
+        // Clone the polynomials before converting since we need them for XGCD
+        let witness_a = poly_to_g2(q1_poly.clone());
+        let witness_b = poly_to_g2(q2_poly.clone());
 
         // XGCD for coprime
         if let Some((gcd, a_poly, b_poly)) = xgcd(q1_poly, q2_poly) {

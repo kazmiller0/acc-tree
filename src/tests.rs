@@ -1,39 +1,68 @@
 use super::*;
 use accumulator_ads::{DynamicAccumulator, DigestSet, Set};
+use std::sync::Once;
+
+static INIT: Once = Once::new();
+
+/// Initialize public parameters for testing
+/// This must be called before running any tests that use the accumulator
+fn init_test_params() {
+    INIT.call_once(|| {
+        use accumulator_ads::acc::setup::{init_public_parameters_direct, PublicParameters};
+        use ark_bls12_381::Fr;
+        
+        // Generate test parameters with sufficient degree for all tests
+        // test_bulk_kv_operations_large uses 500 elements, so we need at least degree 500
+        let secret_s = Fr::from(259535143263514268207918833918737523409u128);
+        let params = PublicParameters::generate_for_testing(secret_s, 600);
+        
+        // Initialize global parameters
+        init_public_parameters_direct(params)
+            .expect("Failed to initialize test parameters");
+    });
+}
 
 // Helper function to calculate accumulator for a Set
 fn cal_acc_g1(keys: &Set<String>) -> accumulator_ads::G1Affine {
+    init_test_params();
     DynamicAccumulator::calculate_commitment(&DigestSet::new(keys))
 }
 
 // Helper function to verify membership
+// SECURITY FIX: Uses only public parameters for verification
 fn verify_membership(acc_val: &accumulator_ads::G1Affine, witness: &accumulator_ads::G1Affine, key: &String) -> bool {
+    init_test_params();
     use accumulator_ads::Fr;
-    use accumulator_ads::acc::setup::PRI_S;
-    use accumulator_ads::acc::utils::FixedBaseCurvePow;
+    use accumulator_ads::acc::setup::get_g2s;
     use accumulator_ads::digest::Digestible;
     use accumulator_ads::acc::utils::digest_to_prime_field;
-    use ark_bls12_381::{Bls12_381 as Curve, G2Affine, G2Projective};
+    use ark_bls12_381::{Bls12_381 as Curve, G2Affine};
     use ark_ec::{PairingEngine, AffineCurve, ProjectiveCurve};
+    use std::ops::Neg;
     
     // Get the Fr element for the key
     let key_digest = key.to_digest();
     let key_fr: Fr = digest_to_prime_field(&key_digest);
     
-    // Compute g2^(s-element)
-    let s_minus_elem: Fr = *PRI_S - key_fr;
-    let g2_power: FixedBaseCurvePow<G2Projective> = FixedBaseCurvePow::build(&G2Projective::prime_subgroup_generator());
-    let g2_s_minus_elem = g2_power.apply(&s_minus_elem);
+    let g2 = G2Affine::prime_subgroup_generator();
+    let g2_s = get_g2s(1_usize); // g2^s from public parameters
+    
+    // Compute g2^(-element)
+    let g2_neg_elem = g2.mul(key_fr.neg()).into_affine();
+    
+    // Compute g2^(s-element) = g2^s * g2^{-element}
+    let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
     
     // Verify: e(witness, g2^(s-element)) == e(acc, g2)
     let lhs = Curve::pairing(*witness, g2_s_minus_elem);
-    let rhs = Curve::pairing(*acc_val, G2Affine::prime_subgroup_generator());
+    let rhs = Curve::pairing(*acc_val, g2);
     
     lhs == rhs
 }
 
 #[test]
 fn test_node_hash_and_collect() {
+    init_test_params();
     let l = Box::new(Node::Leaf {
         key: "A".into(),
         fid: "fa".into(),
@@ -117,6 +146,7 @@ fn traverse_nodes<F: FnMut(&Node)>(node: &Node, f: &mut F) {
 
 #[test]
 fn test_basic_ops_insert_update_delete_revive_and_consistency() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
 
     // insert
@@ -203,6 +233,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
 
 #[test]
 fn test_normalize_merge_and_collect_leaves_behaviour() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     for i in 0..8 {
         tree.insert(format!("K{}", i), format!("F{}", i));
@@ -246,6 +277,7 @@ fn test_normalize_merge_and_collect_leaves_behaviour() {
 
 #[test]
 fn test_edge_cases_empty_tree_and_duplicates_and_updates_on_deleted() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     // empty tree ops should not panic
     assert_eq!(tree.get("nope"), None);
@@ -283,6 +315,7 @@ fn test_edge_cases_empty_tree_and_duplicates_and_updates_on_deleted() {
 
 #[test]
 fn test_tombstone_propagation_and_normalize_behavior() {
+    init_test_params();
     // build controlled tree: ((a,b),(c,d))
     let a = Box::new(Node::Leaf {
         key: "a".into(),
@@ -344,7 +377,7 @@ fn test_tombstone_propagation_and_normalize_behavior() {
     tree.delete("x");
     tree.delete("y");
     // after deletions, tree should have merged roots with empty keys
-    assert!(tree.roots.len() >= 1);
+    assert!(!tree.roots.is_empty());
     for root in &tree.roots {
         // all keys should be tombstoned (empty keys)
         assert!(root.keys().is_empty());
@@ -354,6 +387,7 @@ fn test_tombstone_propagation_and_normalize_behavior() {
 
 #[test]
 fn test_revive_updates_nonleaf_for_deep_tree() {
+    init_test_params();
     // build ((a,b),(c,d)) again
     let a = Box::new(Node::Leaf {
         key: "a".into(),
@@ -410,6 +444,7 @@ fn test_revive_updates_nonleaf_for_deep_tree() {
 
 #[test]
 fn test_special_key_and_fid_boundaries() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     // empty key and fid
     tree.insert("".to_string(), "".to_string());
@@ -441,6 +476,7 @@ fn test_special_key_and_fid_boundaries() {
 
 #[test]
 fn test_tree_lifecycle() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     for i in 0..8 {
         tree.insert(format!("K{}", i), format!("F{}", i));
@@ -473,6 +509,7 @@ fn test_tree_lifecycle() {
 
 #[test]
 fn test_bulk_kv_operations() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     let n: usize = 200;
 
@@ -523,6 +560,7 @@ fn test_bulk_kv_operations() {
 #[test]
 #[ignore]
 fn test_bulk_kv_operations_large() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     let n: usize = 500; // reduced size for faster runs
 
@@ -570,10 +608,11 @@ fn test_bulk_kv_operations_large() {
 
 #[test]
 fn test_randomized_property_operations() {
+    init_test_params();
     use std::collections::HashMap;
 
     // deterministic simple LCG
-    let mut seed: u64 = 0x1234_5678_abcd_eu64;
+    let mut seed: u64 = 0x0001_2345_678a_bcde_u64;
     fn lcg(s: &mut u64) -> u64 {
         *s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
         *s
@@ -677,6 +716,7 @@ fn test_randomized_property_operations() {
 #[test]
 #[ignore]
 fn test_randomized_property_operations_large() {
+    init_test_params();
     use std::collections::HashMap;
 
     // deterministic simple LCG
@@ -781,6 +821,7 @@ fn test_randomized_property_operations_large() {
 
 #[test]
 fn test_get_with_proof_verifies() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     tree.insert("P".to_string(), "PV".to_string());
 
@@ -811,6 +852,7 @@ fn test_get_with_proof_verifies() {
 
 #[test]
 fn test_update_with_proof() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     tree.insert("Ukey".to_string(), "Ufid".to_string());
 
@@ -840,6 +882,7 @@ fn test_update_with_proof() {
 
 #[test]
 fn test_delete_with_proof() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
     tree.insert("Dkey".to_string(), "Dfid".to_string());
 
@@ -862,8 +905,7 @@ fn test_delete_with_proof() {
 }
 
 #[test]
-fn test_get_with_nonmembership_when_absent() {
-    let tree = AccumulatorTree::new();
+fn test_get_with_nonmembership_when_absent() {    init_test_params();    let tree = AccumulatorTree::new();
     // empty tree: key absent
     let qr = tree.get_with_proof("Z");
     assert_eq!(qr.fid, None);
@@ -874,6 +916,7 @@ fn test_get_with_nonmembership_when_absent() {
 
 #[test]
 fn test_insert_with_proof() {
+    init_test_params();
     let mut tree = AccumulatorTree::new();
 
     // ensure key absent before insert
@@ -882,8 +925,7 @@ fn test_insert_with_proof() {
     // capture insert with proof
     let resp = tree.insert_with_proof("I".to_string(), "IV".to_string());
 
-    // pre_roots should be present (snapshot of previous roots)
-    assert!(!resp.pre_roots.is_empty() || true);
+    // pre_roots might be empty if tree was empty (no assertion needed)
 
     // pre_nonmembership should prove 'I' did not exist before
     if let Some(pre_nm) = &resp.pre_nonmembership {
