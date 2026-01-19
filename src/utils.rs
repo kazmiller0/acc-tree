@@ -18,7 +18,7 @@ pub fn print_tree(tree: &AccumulatorTree) {
 /// 将节点的 Key 集合渲染为排序后的字符串
 pub fn render_keys(node: &Node) -> String {
     let keys = node.keys();
-    let mut entries: Vec<_> = keys.iter().map(|(k, v)| (k.clone(), *v)).collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut entries: Vec<_> = keys.iter().cloned().collect();
+    entries.sort();
     format!("{:?}", entries)
 }

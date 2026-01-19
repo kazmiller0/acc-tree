@@ -1,15 +1,39 @@
-use crate::digest::Digest;
-use ark_ec::ProjectiveCurve;
-use ark_ff::{BigInteger, FpParameters, PrimeField, Zero};
+//! General Math Toolbox
+//!
+//! This module contains pure mathematical algorithms and low-level type conversions
+//! used by the accumulator.
+//!
+//! # Architecture Note
+//! This file should NOT contain any business logic (like accumulator structs or proof verification).
+//! It is strictly for:
+//! - Pure math algorithms (e.g., XGCD, FixedBasePow)
+//! - Low-level type conversions (e.g., Digest -> Field)
+
+use crate::acc::setup::{get_g1s, get_g2s, G1_S_VEC, G2_S_VEC};
+use crate::digest::{Digest, Digestible};
+use ark_bls12_381::{Fr, G1Affine, G2Affine};
+use ark_ec::{msm::VariableBaseMSM, ProjectiveCurve};
+use ark_ff::{BigInteger, FpParameters, PrimeField, ToBytes, Zero};
 use ark_poly::{
     univariate::{DenseOrSparsePolynomial, DensePolynomial},
-    UVPolynomial,
+    Polynomial, UVPolynomial,
 };
-use itertools::unfold;
+use log::trace;
+use rayon::prelude::*;
+use std::iter;
+
+impl Digestible for G1Affine {
+    fn to_digest(&self) -> Digest {
+        let mut buf = Vec::<u8>::new();
+        self.write(&mut buf)
+            .unwrap_or_else(|_| panic!("failed to serialize {:?}", self));
+        buf.to_digest()
+    }
+}
 
 pub fn try_digest_to_prime_field<F: PrimeField>(input: &Digest) -> Option<F> {
     let mut num = F::from_be_bytes_mod_order(&input.0).into_repr();
-    // ensure the result is at most in 248 bits. so PUB_Q - Fr and Fr + PUB_Q - Fr never overflow.
+    // Ensure 248-bit limit to prevent overflow.
     for v in num.as_mut().iter_mut().skip(3) {
         *v = 0;
     }
@@ -72,10 +96,13 @@ impl<G: ProjectiveCurve> FixedBaseCurvePow<G> {
             } else {
                 lookup_size
             };
-            let sub_table: Vec<G> = unfold(multiplier, |last| {
-                let ret = *last;
-                last.add_assign(&multiplier);
-                Some(ret)
+            let sub_table: Vec<G> = iter::from_fn({
+                let mut current = multiplier;
+                move || {
+                    let ret = current;
+                    current.add_assign(&multiplier);
+                    Some(ret)
+                }
             })
             .take(table_size)
             .collect();
@@ -129,10 +156,13 @@ impl<F: PrimeField> FixedBaseScalarPow<F> {
             } else {
                 lookup_size
             };
-            let sub_table: Vec<F> = unfold(multiplier, |last| {
-                let ret = *last;
-                last.mul_assign(&multiplier);
-                Some(ret)
+            let sub_table: Vec<F> = iter::from_fn({
+                let mut current = multiplier;
+                move || {
+                    let ret = current;
+                    current.mul_assign(&multiplier);
+                    Some(ret)
+                }
             })
             .take(table_size)
             .collect();
@@ -212,4 +242,60 @@ mod tests {
         let expect = base.pow(num.into_repr());
         assert_eq!(frp.apply(&num), expect);
     }
+}
+
+pub fn poly_to_g1(poly: DensePolynomial<Fr>) -> G1Affine {
+    let mut idxes: Vec<usize> = Vec::with_capacity(poly.degree() + 1);
+    for (i, coeff) in poly.coeffs.iter().enumerate() {
+        if coeff.is_zero() {
+            continue;
+        }
+        idxes.push(i);
+    }
+
+    let mut bases: Vec<G1Affine> = Vec::with_capacity(idxes.len());
+    let mut scalars: Vec<<Fr as PrimeField>::BigInt> = Vec::with_capacity(idxes.len());
+    (0..idxes.len())
+        .into_par_iter()
+        .map(|i| {
+            G1_S_VEC.get(i).copied().unwrap_or_else(|| {
+                trace!("access g1 pub key at {}", i);
+                get_g1s(Fr::from(i as u64))
+            })
+        })
+        .collect_into_vec(&mut bases);
+    (0..idxes.len())
+        .into_par_iter()
+        .map(|i| poly.coeffs[i].into_repr())
+        .collect_into_vec(&mut scalars);
+
+    VariableBaseMSM::multi_scalar_mul(&bases[..], &scalars[..]).into_affine()
+}
+
+pub fn poly_to_g2(poly: DensePolynomial<Fr>) -> G2Affine {
+    let mut idxes: Vec<usize> = Vec::with_capacity(poly.degree() + 1);
+    for (i, coeff) in poly.coeffs.iter().enumerate() {
+        if coeff.is_zero() {
+            continue;
+        }
+        idxes.push(i);
+    }
+
+    let mut bases: Vec<G2Affine> = Vec::with_capacity(idxes.len());
+    let mut scalars: Vec<<Fr as PrimeField>::BigInt> = Vec::with_capacity(idxes.len());
+    (0..idxes.len())
+        .into_par_iter()
+        .map(|i| {
+            G2_S_VEC.get(i).copied().unwrap_or_else(|| {
+                trace!("access g2 pub key at {}", i);
+                get_g2s(Fr::from(i as u64))
+            })
+        })
+        .collect_into_vec(&mut bases);
+    (0..idxes.len())
+        .into_par_iter()
+        .map(|i| poly.coeffs[i].into_repr())
+        .collect_into_vec(&mut scalars);
+
+    VariableBaseMSM::multi_scalar_mul(&bases[..], &scalars[..]).into_affine()
 }

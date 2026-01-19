@@ -1,5 +1,36 @@
 use super::*;
-use acc::{Acc, Accumulator, MultiSet};
+use accumulator_ads::{DynamicAccumulator, DigestSet, Set};
+
+// Helper function to calculate accumulator for a Set
+fn cal_acc_g1(keys: &Set<String>) -> accumulator_ads::G1Affine {
+    DynamicAccumulator::calculate_commitment(&DigestSet::new(keys))
+}
+
+// Helper function to verify membership
+fn verify_membership(acc_val: &accumulator_ads::G1Affine, witness: &accumulator_ads::G1Affine, key: &String) -> bool {
+    use accumulator_ads::Fr;
+    use accumulator_ads::acc::setup::PRI_S;
+    use accumulator_ads::acc::utils::FixedBaseCurvePow;
+    use accumulator_ads::digest::Digestible;
+    use accumulator_ads::acc::utils::digest_to_prime_field;
+    use ark_bls12_381::{Bls12_381 as Curve, G2Affine, G2Projective};
+    use ark_ec::{PairingEngine, AffineCurve, ProjectiveCurve};
+    
+    // Get the Fr element for the key
+    let key_digest = key.to_digest();
+    let key_fr: Fr = digest_to_prime_field(&key_digest);
+    
+    // Compute g2^(s-element)
+    let s_minus_elem: Fr = *PRI_S - key_fr;
+    let g2_power: FixedBaseCurvePow<G2Projective> = FixedBaseCurvePow::build(&G2Projective::prime_subgroup_generator());
+    let g2_s_minus_elem = g2_power.apply(&s_minus_elem);
+    
+    // Verify: e(witness, g2^(s-element)) == e(acc, g2)
+    let lhs = Curve::pairing(*witness, g2_s_minus_elem);
+    let rhs = Curve::pairing(*acc_val, G2Affine::prime_subgroup_generator());
+    
+    lhs == rhs
+}
 
 #[test]
 fn test_node_hash_and_collect() {
@@ -44,7 +75,7 @@ fn test_node_hash_and_collect() {
             .map(|(k, _)| k)
             .collect();
         collected.sort();
-        let mut stored: Vec<_> = keys.as_ref().iter().map(|(k, _)| k.clone()).collect();
+        let mut stored: Vec<_> = keys.as_ref().iter().cloned().collect();
         stored.sort();
         assert_eq!(collected, stored);
     } else {
@@ -102,7 +133,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
     }
     let leaf = found_leaf.expect("leaf X must exist");
     // acc/hash consistent with keys()
-    assert_eq!(leaf.acc(), Acc::cal_acc_g1(&leaf.keys()));
+    assert_eq!(leaf.acc(), cal_acc_g1(&leaf.keys()));
     if let Node::Leaf {
         key, fid, deleted, ..
     } = leaf
@@ -127,7 +158,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
     }
     let leaf2 = updated_leaf.expect("updated leaf must exist");
     assert_ne!(prev_hash, leaf2.hash());
-    assert_eq!(leaf2.acc(), Acc::cal_acc_g1(&leaf2.keys()));
+    assert_eq!(leaf2.acc(), cal_acc_g1(&leaf2.keys()));
 
     // delete
     tree.delete("X");
@@ -166,7 +197,7 @@ fn test_basic_ops_insert_update_delete_revive_and_consistency() {
         assert!(!*deleted);
         assert_eq!(tree.get(key.as_str()), Some(fid.clone()));
         assert_eq!(lf.hash(), leaf_hash(key, fid));
-        assert_eq!(lf.acc(), Acc::cal_acc_g1(&lf.keys()));
+        assert_eq!(lf.acc(), cal_acc_g1(&lf.keys()));
     }
 }
 
@@ -187,7 +218,7 @@ fn test_normalize_merge_and_collect_leaves_behaviour() {
     for r in &tree.roots {
         let mut check = |n: &Node| {
             // acc == cal_acc_g1(keys)
-            assert_eq!(n.acc(), Acc::cal_acc_g1(&n.keys()));
+            assert_eq!(n.acc(), cal_acc_g1(&n.keys()));
             if let Node::NonLeaf { left, right, .. } = n {
                 assert_eq!(n.hash(), nonleaf_hash(left.hash(), right.hash()));
             }
@@ -290,7 +321,7 @@ fn test_tombstone_propagation_and_normalize_behavior() {
     if let Node::NonLeaf { left, right: _, .. } = &*root_after {
         // left keys should be empty and acc should equal empty acc
         assert!(left.keys().is_empty());
-        assert_eq!(left.acc(), Acc::cal_acc_g1(&MultiSet::<String>::new()));
+        assert_eq!(left.acc(), cal_acc_g1(&Set::<String>::new()));
         // left.hash() should be computed from child hashes which are tombstones
         if let Node::NonLeaf {
             left: lchild,
@@ -317,7 +348,7 @@ fn test_tombstone_propagation_and_normalize_behavior() {
     for root in &tree.roots {
         // all keys should be tombstoned (empty keys)
         assert!(root.keys().is_empty());
-        assert_eq!(root.acc(), Acc::cal_acc_g1(&MultiSet::<String>::new()));
+        assert_eq!(root.acc(), cal_acc_g1(&Set::<String>::new()));
     }
 }
 
@@ -368,8 +399,8 @@ fn test_revive_updates_nonleaf_for_deep_tree() {
     } = &*revived
     {
         // keys should now contain "a"
-        assert!(keys.contains_key("a"));
-        assert_eq!(acc, &Acc::cal_acc_g1(&keys.as_ref().clone()));
+        assert!(keys.contains(&"a".to_string()));
+        assert_eq!(acc, &cal_acc_g1(&keys.as_ref().clone()));
         // hash of left should now not be the tombstone-only hash
         assert_ne!(left.hash(), empty_hash());
     } else {
@@ -392,7 +423,7 @@ fn test_special_key_and_fid_boundaries() {
     for r in &tree.roots {
         let mut check = |n: &Node| {
             // ensure acc matches keys
-            assert_eq!(n.acc(), Acc::cal_acc_g1::<String>(&n.keys()));
+            assert_eq!(n.acc(), cal_acc_g1(&n.keys()));
             if let Node::Leaf {
                 key, fid, deleted, ..
             } = n
@@ -766,7 +797,7 @@ fn test_get_with_proof_verifies() {
     let acc_val = qr.accumulator.expect("acc must be present");
     let witness = qr.membership_witness.expect("witness must be present");
     // verify accumulator membership witness
-    assert!(acc::Acc::verify_membership(
+    assert!(verify_membership(
         &acc_val,
         &witness,
         &"P".to_string()
@@ -866,5 +897,5 @@ fn test_insert_with_proof() {
     // verify membership witness against accumulator
     let acc_val = resp.post_accumulator.expect("post acc present");
     let witness = resp.post_membership_witness.expect("post witness present");
-    assert!(acc::Acc::verify_membership(&acc_val, &witness, &resp.key));
+    assert!(verify_membership(&acc_val, &witness, &resp.key));
 }

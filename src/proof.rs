@@ -1,5 +1,30 @@
 use crate::{Hash, leaf_hash, nonleaf_hash};
-use acc::G1Affine;
+use accumulator_ads::G1Affine;
+
+// Helper to verify membership using pairing
+fn verify_membership_internal(acc: &G1Affine, witness: &G1Affine, key: &String) -> bool {
+    use accumulator_ads::Fr;
+    use accumulator_ads::acc::setup::PRI_S;
+    use accumulator_ads::acc::utils::{FixedBaseCurvePow, digest_to_prime_field};
+    use accumulator_ads::digest::Digestible;
+    use ark_bls12_381::{Bls12_381 as Curve, G2Affine, G2Projective};
+    use ark_ec::{PairingEngine, AffineCurve, ProjectiveCurve};
+    
+    // Get the Fr element for the key
+    let key_digest = key.to_digest();
+    let key_fr: Fr = digest_to_prime_field(&key_digest);
+    
+    // Compute g2^(s-element)
+    let s_minus_elem: Fr = *PRI_S - key_fr;
+    let g2_power: FixedBaseCurvePow<G2Projective> = FixedBaseCurvePow::build(&G2Projective::prime_subgroup_generator());
+    let g2_s_minus_elem = g2_power.apply(&s_minus_elem);
+    
+    // Verify: e(witness, g2^(s-element)) == e(acc, g2)
+    let lhs = Curve::pairing(*witness, g2_s_minus_elem);
+    let rhs = Curve::pairing(*acc, G2Affine::prime_subgroup_generator());
+    
+    lhs == rhs
+}
 
 #[derive(Debug, Clone)]
 pub struct Proof {
@@ -96,7 +121,7 @@ impl QueryResponse {
         // verify accumulator membership: acc + element_commitment == acc (via witness)
         match (&self.accumulator, &self.membership_witness) {
             (Some(acc), Some(witness)) => {
-                acc::Acc::verify_membership(acc, witness, &key.to_string())
+                verify_membership_internal(acc, witness, &key.to_string())
             }
             _ => false,
         }
@@ -278,12 +303,12 @@ impl UpdateResponse {
         // verify accumulator membership: pre (old) and post (new)
         if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
             && let Some(_old) = &self.old_fid
-            && !acc::Acc::verify_membership(acc, w, &self.key)
+            && !verify_membership_internal(acc, w, &self.key)
         {
             return false;
         }
 
-        if !acc::Acc::verify_membership(
+        if !verify_membership_internal(
             &self.post_accumulator,
             &self.post_membership_witness,
             &self.key,
@@ -373,7 +398,7 @@ impl DeleteResponse {
         // verify accumulator membership for pre-state (old element)
         if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
             && let Some(_old) = &self.old_fid
-            && !acc::Acc::verify_membership(acc, w, &self.key)
+            && !verify_membership_internal(acc, w, &self.key)
         {
             return false;
         }

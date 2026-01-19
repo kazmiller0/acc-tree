@@ -1,11 +1,11 @@
-use ark_ec::AffineCurve;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use core::marker::PhantomData;
 use serde::{
     de::{Deserializer, Visitor},
     ser::Serializer,
 };
 
-pub fn serialize<S: Serializer, C: AffineCurve>(c: &C, s: S) -> Result<S::Ok, S::Error> {
+pub fn serialize<S: Serializer, C: CanonicalSerialize>(c: &C, s: S) -> Result<S::Ok, S::Error> {
     let mut buf = Vec::<u8>::new();
     c.serialize(&mut buf)
         .map_err(<S::Error as serde::ser::Error>::custom)?;
@@ -16,17 +16,19 @@ pub fn serialize<S: Serializer, C: AffineCurve>(c: &C, s: S) -> Result<S::Ok, S:
     }
 }
 
-pub fn deserialize<'de, D: Deserializer<'de>, C: AffineCurve>(d: D) -> Result<C, D::Error> {
+pub fn deserialize<'de, D: Deserializer<'de>, C: CanonicalSerialize + CanonicalDeserialize>(
+    d: D,
+) -> Result<C, D::Error> {
     use core::fmt;
     use serde::de::Error as DeError;
 
     struct HexVisitor<C>(PhantomData<C>);
 
-    impl<'de, C: AffineCurve> Visitor<'de> for HexVisitor<C> {
+    impl<'de, C: CanonicalSerialize + CanonicalDeserialize> Visitor<'de> for HexVisitor<C> {
         type Value = C;
 
         fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            f.write_str("AffineCurve")
+            f.write_str("Arkworks object")
         }
 
         fn visit_str<E: DeError>(self, value: &str) -> Result<C, E> {
@@ -37,11 +39,11 @@ pub fn deserialize<'de, D: Deserializer<'de>, C: AffineCurve>(d: D) -> Result<C,
 
     struct BytesVisitor<C>(PhantomData<C>);
 
-    impl<'de, C: AffineCurve> Visitor<'de> for BytesVisitor<C> {
+    impl<'de, C: CanonicalSerialize + CanonicalDeserialize> Visitor<'de> for BytesVisitor<C> {
         type Value = C;
 
         fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            f.write_str("AffineCurve")
+            f.write_str("Arkworks object")
         }
 
         fn visit_bytes<E: DeError>(self, v: &[u8]) -> Result<C, E> {
@@ -58,21 +60,21 @@ pub fn deserialize<'de, D: Deserializer<'de>, C: AffineCurve>(d: D) -> Result<C,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ark_bls12_381::{G1Affine, G2Affine};
+    use ark_ec::AffineCurve;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
     struct Foo {
-        #[serde(with = "crate::serde_impl")]
+        #[serde(with = "super")]
         f1: G1Affine,
-        #[serde(with = "crate::serde_impl")]
+        #[serde(with = "super")]
         f2: G2Affine,
     }
 
     #[test]
     fn test_serde() {
-        #[allow(clippy::blacklisted_name)]
+        #[allow(clippy::disallowed_names)]
         let foo = Foo {
             f1: G1Affine::prime_subgroup_generator(),
             f2: G2Affine::prime_subgroup_generator(),

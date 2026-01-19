@@ -1,4 +1,4 @@
-use acc::{Acc, Accumulator, G1Affine, MultiSet};
+use accumulator_ads::{DynamicAccumulator, DigestSet, G1Affine, Set};
 use std::rc::Rc;
 
 use crate::crypto::{Hash, empty_acc, empty_hash, leaf_hash, nonleaf_hash};
@@ -13,7 +13,7 @@ pub enum Node {
     },
     NonLeaf {
         hash: Hash,
-        keys: Rc<MultiSet<String>>,
+        keys: Rc<Set<String>>,
         acc: G1Affine,
         level: usize,
         left: Box<Node>,
@@ -49,23 +49,23 @@ impl Node {
         match self {
             Node::Leaf { key, deleted, .. } => {
                 if *deleted {
-                    // empty multiset accumulator
+                    // empty set accumulator
                     empty_acc()
                 } else {
-                    Acc::cal_acc_g1(&MultiSet::from_vec(vec![key.clone()]))
+                    DynamicAccumulator::calculate_commitment(&DigestSet::new(&Set::from_vec(vec![key.clone()])))
                 }
             }
             Node::NonLeaf { acc, .. } => *acc,
         }
     }
 
-    pub fn keys(&self) -> MultiSet<String> {
+    pub fn keys(&self) -> Set<String> {
         match self {
             Node::Leaf { key, deleted, .. } => {
                 if *deleted {
-                    MultiSet::new()
+                    Set::new()
                 } else {
-                    MultiSet::from_vec(vec![key.clone()])
+                    Set::from_vec(vec![key.clone()])
                 }
             }
             Node::NonLeaf { keys, .. } => keys.as_ref().clone(),
@@ -75,7 +75,7 @@ impl Node {
     pub fn has_key(&self, target_key: &str) -> bool {
         match self {
             Node::Leaf { key, deleted, .. } => !*deleted && key == target_key,
-            Node::NonLeaf { keys, .. } => keys.contains_key(target_key),
+            Node::NonLeaf { keys, .. } => keys.contains(&target_key.to_string()),
         }
     }
 
@@ -296,9 +296,9 @@ impl Node {
                 };
                 if changed {
                     // recompute keys/acc/hash from children
-                    let new_keys = Rc::new(&left.keys() + &right.keys());
+                    let new_keys = Rc::new(left.keys().union(&right.keys()));
                     *keys = new_keys.clone();
-                    *acc = Acc::cal_acc_g1(&new_keys);
+                    *acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
                     *hash = nonleaf_hash(left.hash(), right.hash());
                 }
                 changed
@@ -338,8 +338,8 @@ impl Node {
             } => {
                 let l = left.delete_recursive(target_key);
                 let r = right.delete_recursive(target_key);
-                let new_keys = Rc::new(&l.keys() + &r.keys());
-                let new_acc = Acc::cal_acc_g1(&new_keys);
+                let new_keys = Rc::new(l.keys().union(&r.keys()));
+                let new_acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
                 let new_hash = nonleaf_hash(l.hash(), r.hash());
                 Box::new(Node::NonLeaf {
                     hash: new_hash,
@@ -384,8 +384,8 @@ impl Node {
             } => {
                 let l = left.revive_recursive(target_key, new_fid);
                 let r = right.revive_recursive(target_key, new_fid);
-                let new_keys = Rc::new(&l.keys() + &r.keys());
-                let new_acc = Acc::cal_acc_g1(&new_keys);
+                let new_keys = Rc::new(l.keys().union(&r.keys()));
+                let new_acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
                 let new_hash = nonleaf_hash(l.hash(), r.hash());
                 Box::new(Node::NonLeaf {
                     hash: new_hash,
@@ -401,8 +401,8 @@ impl Node {
 
     /// Merge two nodes into a new NonLeaf node
     pub(crate) fn merge(left: Box<Node>, right: Box<Node>) -> Box<Node> {
-        let new_keys = Rc::new(&left.keys() + &right.keys());
-        let new_acc = Acc::cal_acc_g1(&new_keys);
+        let new_keys = Rc::new(left.keys().union(&right.keys()));
+        let new_acc = DynamicAccumulator::calculate_commitment(&DigestSet::new(&new_keys));
         Box::new(Node::NonLeaf {
             hash: nonleaf_hash(left.hash(), right.hash()),
             keys: new_keys,

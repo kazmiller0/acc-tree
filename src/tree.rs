@@ -61,7 +61,7 @@ impl AccumulatorTree {
     /// snapshot (`pre_roots`) that a verifier can use with application-level checks.
     pub fn insert_with_proof(&mut self, key: String, fid: String) -> crate::proof::InsertResponse {
         // capture pre-insert snapshot (root hash + acc) for all roots
-        let pre_roots: Vec<(Hash, acc::G1Affine)> =
+        let pre_roots: Vec<(Hash, accumulator_ads::G1Affine)> =
             self.roots.iter().map(|r| (r.hash(), r.acc())).collect();
 
         // capture pre-insert non-membership proof (if any)
@@ -167,7 +167,11 @@ impl AccumulatorTree {
                 let proof = crate::proof::Proof::new(root_h, leaf_h, path);
                 // create accumulator membership witness for the key
                 let acc_val = r.acc();
-                let acc_witness = acc::Acc::create_witness(&acc_val, &key.to_string());
+                let key_set = accumulator_ads::Set::from_vec(vec![key.to_string()]);
+                let key_digest_set = accumulator_ads::DigestSet::new(&key_set);
+                let key_elem = *key_digest_set.iter().next().unwrap();
+                let acc_inst = accumulator_ads::DynamicAccumulator { acc_value: acc_val };
+                let acc_witness = acc_inst.compute_membership_witness(key_elem).unwrap_or(acc_val);
                 return crate::proof::QueryResponse::new(
                     Some(fid),
                     Some(proof),

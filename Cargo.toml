@@ -1,5 +1,5 @@
 [workspace]
-members = ["acc"]
+members = ["accumulator_ads"]
 
 [package]
 name = "accumulator-tree"
@@ -26,7 +26,7 @@ smallvec = { version = "1.6", features = ["serde"] }
 
 # Local accumulator crate
 
-acc = { path = "acc" }
+accumulator_ads = { path = "accumulator_ads" }
 
 
 

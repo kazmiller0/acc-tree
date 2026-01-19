@@ -1,25 +1,29 @@
-use crate::utils::digest_to_prime_field;
-use crate::set::{MultiSet, SetElement};
+use crate::acc::utils::digest_to_prime_field;
+use crate::set::{Set, SetElement};
 use ark_ff::PrimeField;
 use ark_poly::{univariate::DensePolynomial, UVPolynomial};
 use core::ops::Deref;
 use rayon::{self, prelude::*};
 use std::borrow::Cow;
+#[allow(unused_imports)]
+use std::ops::Neg;
 
 #[derive(Debug, Clone, Default)]
 pub struct DigestSet<F: PrimeField> {
-    pub(crate) inner: Vec<(F, u32)>,
+    pub(crate) inner: Vec<F>,
 }
 
 impl<F: PrimeField> DigestSet<F> {
-    pub fn new<T: SetElement>(input: &MultiSet<T>) -> Self {
-        let mut inner: Vec<(F, u32)> = Vec::with_capacity(input.len());
-        (0..input.len())
+    pub fn new<T: SetElement>(input: &Set<T>) -> Self {
+        let mut inner: Vec<F> = Vec::with_capacity(input.len());
+        // Collect for parallel iteration
+        let elements: Vec<&T> = input.iter().collect();
+        (0..elements.len())
             .into_par_iter()
             .map(|i| {
-                let (k, v) = input.iter().nth(i).unwrap();
+                let k = elements[i];
                 let d = k.to_digest();
-                (digest_to_prime_field(&d), *v)
+                digest_to_prime_field(&d)
             })
             .collect_into_vec(&mut inner);
         Self { inner }
@@ -27,10 +31,11 @@ impl<F: PrimeField> DigestSet<F> {
 
     pub fn expand_to_poly(&self) -> DensePolynomial<F> {
         let mut inputs = Vec::new();
-        for (k, v) in &self.inner {
-            for _ in 0..*v {
-                inputs.push(DensePolynomial::from_coefficients_vec(vec![*k, F::one()]));
-            }
+        for k in &self.inner {
+            inputs.push(DensePolynomial::from_coefficients_vec(vec![
+                k.neg(),
+                F::one(),
+            ]));
         }
 
         fn expand<'a, F: PrimeField>(
@@ -51,7 +56,7 @@ impl<F: PrimeField> DigestSet<F> {
 }
 
 impl<F: PrimeField> Deref for DigestSet<F> {
-    type Target = Vec<(F, u32)>;
+    type Target = Vec<F>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
@@ -66,19 +71,26 @@ mod tests {
     #[test]
     fn test_digest_to_poly() {
         let set = DigestSet {
-            inner: vec![
-                (Fr::from(1u32), 2),
-                (Fr::from(2u32), 1),
-                (Fr::from(3u32), 1),
-            ],
+            inner: vec![Fr::from(1u32), Fr::from(2u32), Fr::from(3u32)],
         };
-        let expect = DensePolynomial::from_coefficients_vec(vec![
-            Fr::from(6u32),
-            Fr::from(17u32),
-            Fr::from(17u32),
-            Fr::from(7u32),
+        let _expect = DensePolynomial::from_coefficients_vec(vec![
+            Fr::from(6u32).neg(),
+            Fr::from(1u32),
+            Fr::from(1u32).neg(),
+            Fr::from(1u32).neg(),
             Fr::from(1u32),
         ]);
-        assert_eq!(set.expand_to_poly(), expect);
+        let poly = set.expand_to_poly();
+        // (X-1) * (X-2) * (X-3)
+        // (X^2-3X+2) * (X-3)
+        // X^3 - 3X^2 - 3X^2 + 9X + 2X - 6
+        // X^3 - 6X^2 + 11X - 6
+        let expected_poly = DensePolynomial::from_coefficients_vec(vec![
+            Fr::from(6u32).neg(),
+            Fr::from(11u32),
+            Fr::from(6u32).neg(),
+            Fr::from(1u32),
+        ]);
+        assert_eq!(poly, expected_poly);
     }
 }

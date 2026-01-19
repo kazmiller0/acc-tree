@@ -1,4 +1,3 @@
-use acc::Acc;
 use std::time::{Duration, Instant};
 
 fn mean(durs: &[Duration]) -> Duration {
@@ -76,10 +75,21 @@ pub fn run_benchmark(n: usize) {
         for i in 0..sample {
             let key = format!("Key{}", (i * 13) % n);
             if let Some(idx) = tree.roots.iter().position(|r| r.has_key(&key)) {
-                let acc = tree.roots[idx].acc();
-                let witness = Acc::create_witness(&acc, &key);
-                if Acc::verify_membership(&acc, &witness, &key) {
-                    verify_ok += 1;
+                let acc_val = tree.roots[idx].acc();
+                // Create witness using DynamicAccumulator
+                use accumulator_ads::{DynamicAccumulator, DigestSet, Set};
+                let key_set = Set::from_vec(vec![key.clone()]);
+                let key_digest_set = DigestSet::new(&key_set);
+                let key_elem = *key_digest_set.iter().next().unwrap();
+                let acc_inst = DynamicAccumulator { acc_value: acc_val };
+                if let Ok(witness) = acc_inst.compute_membership_witness(key_elem) {
+                    // Verify membership
+                    use ark_ec::{ProjectiveCurve, AffineCurve};
+                    let element_acc = DynamicAccumulator::calculate_commitment(&key_digest_set);
+                    let reconstructed = witness.into_projective() + element_acc.into_projective();
+                    if reconstructed.into_affine() == acc_val {
+                        verify_ok += 1;
+                    }
                 }
             }
         }
