@@ -91,60 +91,35 @@ impl AccumulatorTree {
 
     /// Produce a non-membership proof for `key` by returning the predecessor and successor
     /// leaves (if any) together with their Merkle proofs. Returns `None` if the key exists.
+    /// Generate a cryptographically sound non-membership proof
+    /// This uses the accumulator's Bézout coefficient approach to prove
+    /// that a key is NOT in the accumulated set
     pub fn get_nonmembership_proof(&self, key: &str) -> Option<crate::proof::NonMembershipProof> {
-        // Track best global predecessor (max < key) and successor (min > key)
-        let mut best_pred: Option<((String, String), usize)> = None; // ((k,fid), root_idx)
-        let mut best_succ: Option<((String, String), usize)> = None; // ((k,fid), root_idx)
-
-        for (i, root) in self.roots.iter().enumerate() {
-            let (found, pred, succ) = root.find_pred_succ(key);
-            if found {
-                return None; // key exists
-            }
-            if let Some((pk, pf)) = pred {
-                let should_replace = match &best_pred {
-                    None => true,
-                    Some(((bk, _), _)) => pk > *bk,
-                };
-                if should_replace {
-                    best_pred = Some(((pk, pf), i));
-                }
-            }
-            if let Some((sk, sf)) = succ {
-                let should_replace = match &best_succ {
-                    None => true,
-                    Some(((bk, _), _)) => sk < *bk,
-                };
-                if should_replace {
-                    best_succ = Some(((sk, sf), i));
-                }
+        // First check if key exists anywhere
+        for root in &self.roots {
+            if root.has_key(key) {
+                return None; // Key exists, cannot create non-membership proof
             }
         }
-
-        // build proofs for pred/succ using their respective roots
-        let pred_proof = if let Some(((k, f), idx)) = best_pred.clone() {
-            let mut path: Vec<(Hash, bool)> = Vec::new();
-            let _ = self.roots[idx].get_proof_recursive(&k, &mut path);
-            let root_h = self.roots[idx].hash();
-            let leaf_h = leaf_hash(&k, &f);
-            Some((k, f, crate::proof::Proof::new(root_h, leaf_h, path)))
+        
+        // Collect all keys from all roots to build the complete set
+        let mut all_keys = accumulator_ads::Set::<String>::new();
+        for root in &self.roots {
+            all_keys = all_keys.union(&root.keys());
+        }
+        
+        // Calculate the global accumulator for all keys
+        let global_acc = if all_keys.is_empty() {
+            // Empty tree: use empty accumulator
+            crate::crypto::empty_acc()
         } else {
-            None
+            // Calculate accumulator commitment for all keys
+            let digest_set = accumulator_ads::DigestSet::new(&all_keys);
+            accumulator_ads::DynamicAccumulator::calculate_commitment(&digest_set)
         };
-
-        let succ_proof = if let Some(((k, f), idx)) = best_succ.clone() {
-            let mut path: Vec<(Hash, bool)> = Vec::new();
-            let _ = self.roots[idx].get_proof_recursive(&k, &mut path);
-            let root_h = self.roots[idx].hash();
-            let leaf_h = leaf_hash(&k, &f);
-            Some((k, f, crate::proof::Proof::new(root_h, leaf_h, path)))
-        } else {
-            None
-        };
-
-        Some(crate::proof::NonMembershipProof::new(
-            pred_proof, succ_proof,
-        ))
+        
+        // Generate non-membership proof using accumulator's Bézout approach
+        crate::proof::NonMembershipProof::new(key.to_string(), global_acc, &all_keys)
     }
 
     pub fn get(&self, key: &str) -> Option<String> {

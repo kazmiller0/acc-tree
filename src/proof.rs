@@ -1,5 +1,5 @@
 use crate::{Hash, leaf_hash, nonleaf_hash};
-use accumulator_ads::G1Affine;
+use accumulator_ads::{G1Affine, DigestSet};
 
 // Helper to verify membership using pairing
 // SECURITY FIX: This function now uses ONLY public parameters (g2^s) for verification.
@@ -182,47 +182,53 @@ impl InsertResponse {
     }
 }
 
+/// Non-membership proof using cryptographic accumulator
+/// This proves that a key is NOT in the accumulated set using Bézout coefficients
 #[derive(Debug, Clone)]
 pub struct NonMembershipProof {
-    /// predecessor: (key, fid, proof)
-    pub pred: Option<(String, String, Proof)>,
-    /// successor: (key, fid, proof)
-    pub succ: Option<(String, String, Proof)>,
+    /// The key being proved as non-member
+    pub key: String,
+    /// The accumulator value of the tree (all keys)
+    pub accumulator: G1Affine,
+    /// The underlying cryptographic non-membership proof from accumulator_ads
+    pub acc_proof: accumulator_ads::NonMembershipProof,
 }
 
 impl NonMembershipProof {
-    pub fn new(
-        pred: Option<(String, String, Proof)>,
-        succ: Option<(String, String, Proof)>,
-    ) -> Self {
-        Self { pred, succ }
+    /// Create a new non-membership proof for a key against the given set
+    pub fn new(key: String, accumulator: G1Affine, all_keys_set: &accumulator_ads::Set<String>) -> Option<Self> {
+        use accumulator_ads::digest::Digestible;
+        use accumulator_ads::acc::utils::digest_to_prime_field;
+        
+        // Convert key to field element
+        let key_digest = key.to_digest();
+        let key_elem = digest_to_prime_field(&key_digest);
+        
+        // Convert all keys to digest set
+        let digest_set = DigestSet::new(all_keys_set);
+        
+        // Generate cryptographic non-membership proof using Bézout coefficients
+        match accumulator_ads::NonMembershipProof::new(key_elem, &digest_set) {
+            Ok(acc_proof) => Some(Self {
+                key,
+                accumulator,
+                acc_proof,
+            }),
+            Err(_) => None, // Key is in the set, cannot create non-membership proof
+        }
     }
 
-    /// Verify non-membership with respect to provided key.
-    /// Returns true if proofs for pred/succ (if present) validate and ordering holds.
-    pub fn verify(&self, key: &str) -> bool {
-        // verify predecessor proof and ordering
-        if let Some((pkey, _pfid, pproof)) = &self.pred {
-            if !pproof.verify() {
-                return false;
-            }
-            if pkey.as_str() >= key {
-                return false;
-            }
+    /// Verify the non-membership proof
+    /// Returns true if the key is proven to NOT be in the accumulated set
+    pub fn verify(&self, expected_key: &str) -> bool {
+        // Verify the key matches
+        if self.key != expected_key {
+            return false;
         }
-
-        // verify successor proof and ordering
-        if let Some((skey, _sfid, sproof)) = &self.succ {
-            if !sproof.verify() {
-                return false;
-            }
-            if key >= skey.as_str() {
-                return false;
-            }
-        }
-
-        // if both absent, tree is empty -> non-membership trivially true
-        true
+        
+        // Verify the cryptographic non-membership proof
+        // This checks: A(s)*P(s) + B(s)*(s-x) = 1 using pairings
+        self.acc_proof.verify(self.accumulator)
     }
 }
 
