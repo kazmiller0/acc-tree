@@ -13,7 +13,7 @@ use crate::acc::setup::{get_g1s, get_g2s};
 use crate::digest::{Digest, Digestible};
 use ark_bls12_381::{Fr, G1Affine, G2Affine};
 use ark_ec::{msm::VariableBaseMSM, ProjectiveCurve};
-use ark_ff::{BigInteger, FpParameters, PrimeField, ToBytes, Zero};
+use ark_ff::{BigInteger, Field, FpParameters, PrimeField, ToBytes, Zero};
 use ark_poly::{
     univariate::{DenseOrSparsePolynomial, DensePolynomial},
     Polynomial, UVPolynomial,

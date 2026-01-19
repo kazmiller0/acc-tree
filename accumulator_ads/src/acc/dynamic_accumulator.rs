@@ -11,13 +11,13 @@ use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ff::{Field, One, PrimeField, Zero};
 use ark_poly::{
     univariate::{DenseOrSparsePolynomial, DensePolynomial},
-    Polynomial, UVPolynomial,
+    UVPolynomial,
 };
-use std::ops::{Mul, Neg};
+use std::ops::Neg;
 
 use super::proofs::{MembershipProof, NonMembershipProof};
 use crate::acc::digest_set::DigestSet;
-use crate::acc::utils::{poly_to_g1, poly_to_g2, xgcd};
+use crate::acc::utils::{poly_to_g1, poly_to_g2};
 // 假设 PRI_S 在生产构建中也是可见的，请确保该模块在正式编译中可用
 use super::setup::PRI_S;
 
@@ -102,6 +102,38 @@ impl DynamicAccumulator {
         // Step 2: Add new (multiply by (s-new))
         let s_minus_new: Fr = *PRI_S - new_element;
         Ok(temp_acc.mul(s_minus_new).into_affine())
+    }
+
+    // ==========================================
+    // Incremental Update Operations
+    // ==========================================
+
+    /// Incrementally update accumulator by adding multiple elements using the trapdoor.
+    /// Time complexity: O(k) where k is the number of new elements.
+    pub fn incremental_add_elements(current_acc: G1Affine, new_elements: &[Fr]) -> G1Affine {
+        let mut result = current_acc.into_projective();
+        for elem in new_elements {
+            let s_minus_elem = *PRI_S - elem;
+            result = result.mul(s_minus_elem.into_repr());
+        }
+        result.into_affine()
+    }
+
+    /// Compute union of two accumulators incrementally using the trapdoor.
+    /// Identifies elements in set2 missing from set1, and multiplies acc1 by (s - e) for each.
+    pub fn incremental_union(
+        acc1: G1Affine,
+        _acc2: G1Affine,
+        set1: &DigestSet<Fr>,
+        set2: &DigestSet<Fr>,
+    ) -> G1Affine {
+        let new_elements: Vec<Fr> = set2.iter().filter(|e| !set1.contains(e)).copied().collect();
+
+        if new_elements.is_empty() {
+            acc1
+        } else {
+            Self::incremental_add_elements(acc1, &new_elements)
+        }
     }
 
     // ==========================================
