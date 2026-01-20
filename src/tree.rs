@@ -1,6 +1,6 @@
 use crate::crypto::{Hash, empty_hash, leaf_hash, nonleaf_hash};
 use crate::node::Node;
-use accumulator_ads::{digest_set_from_set, DynamicAccumulator};
+use accumulator_ads::{DynamicAccumulator, digest_set_from_set};
 use std::rc::Rc;
 
 pub struct AccumulatorTree {
@@ -173,14 +173,11 @@ impl AccumulatorTree {
                 let r = Self::node_delete_recursive(right, target_key);
                 let new_keys = Rc::new(l.keys().union(&r.keys()));
 
-                let left_digest = digest_set_from_set(&l.keys());
-                let right_digest = digest_set_from_set(&r.keys());
-                let new_acc = DynamicAccumulator::incremental_union(
-                    l.acc(),
-                    r.acc(),
-                    &left_digest,
-                    &right_digest,
-                );
+                // Optimize: Only convert the difference (right - left) to Vec<Fr>
+                // This avoids O(n*m) comparison in incremental_union
+                let diff_elements = r.keys().difference(&l.keys());
+                let diff_fr = digest_set_from_set(&diff_elements);
+                let new_acc = DynamicAccumulator::incremental_add_elements(l.acc(), &diff_fr);
 
                 let new_hash = nonleaf_hash(l.hash(), r.hash());
                 Box::new(Node::NonLeaf {
@@ -227,14 +224,11 @@ impl AccumulatorTree {
                 let r = Self::node_revive_recursive(right, target_key, new_fid);
                 let new_keys = Rc::new(l.keys().union(&r.keys()));
 
-                let left_digest = digest_set_from_set(&l.keys());
-                let right_digest = digest_set_from_set(&r.keys());
-                let new_acc = DynamicAccumulator::incremental_union(
-                    l.acc(),
-                    r.acc(),
-                    &left_digest,
-                    &right_digest,
-                );
+                // Optimize: Only convert the difference (right - left) to Vec<Fr>
+                // This avoids O(n*m) comparison in incremental_union
+                let diff_elements = r.keys().difference(&l.keys());
+                let diff_fr = digest_set_from_set(&diff_elements);
+                let new_acc = DynamicAccumulator::incremental_add_elements(l.acc(), &diff_fr);
 
                 let new_hash = nonleaf_hash(l.hash(), r.hash());
                 Box::new(Node::NonLeaf {
@@ -254,12 +248,14 @@ impl AccumulatorTree {
         let new_keys = Rc::new(left.keys().union(&right.keys()));
 
         let left_acc = left.acc();
-        let right_acc = right.acc();
-        let left_digest = digest_set_from_set(&left.keys());
-        let right_digest = digest_set_from_set(&right.keys());
 
-        let new_acc =
-            DynamicAccumulator::incremental_union(left_acc, right_acc, &left_digest, &right_digest);
+        // Optimize: Only convert the difference (right - left) to Vec<Fr>
+        // Using HashSet.difference() is O(n), much faster than:
+        // 1. Converting both full sets to Vec<Fr>
+        // 2. Doing O(n*m) contains() checks in incremental_union
+        let diff_elements = right.keys().difference(&left.keys());
+        let diff_fr = digest_set_from_set(&diff_elements);
+        let new_acc = DynamicAccumulator::incremental_add_elements(left_acc, &diff_fr);
 
         Box::new(Node::NonLeaf {
             hash: nonleaf_hash(left.hash(), right.hash()),
