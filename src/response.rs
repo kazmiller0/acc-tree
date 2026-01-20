@@ -1,5 +1,5 @@
 use crate::{Hash, proof::Proof};
-use accumulator_ads::{G1Affine, DigestSet};
+use accumulator_ads::{G1Affine, digest_set_from_set};
 
 /// Non-membership proof using cryptographic accumulator
 /// This proves that a key is NOT in the accumulated set using Bézout coefficients
@@ -28,7 +28,7 @@ impl NonMembershipProof {
         let key_elem = digest_to_prime_field(&key_digest);
 
         // Convert all keys to digest set
-        let digest_set = DigestSet::new(all_keys_set);
+        let digest_set = digest_set_from_set(all_keys_set);
 
         // Generate cryptographic non-membership proof using Bézout coefficients
         match accumulator_ads::NonMembershipProof::new(key_elem, &digest_set) {

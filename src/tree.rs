@@ -1,6 +1,6 @@
 use crate::crypto::{Hash, empty_hash, leaf_hash, nonleaf_hash};
 use crate::node::Node;
-use accumulator_ads::{DigestSet, DynamicAccumulator};
+use accumulator_ads::{digest_set_from_set, DynamicAccumulator};
 use std::rc::Rc;
 
 pub struct AccumulatorTree {
@@ -173,8 +173,8 @@ impl AccumulatorTree {
                 let r = Self::node_delete_recursive(right, target_key);
                 let new_keys = Rc::new(l.keys().union(&r.keys()));
 
-                let left_digest = DigestSet::new(&l.keys());
-                let right_digest = DigestSet::new(&r.keys());
+                let left_digest = digest_set_from_set(&l.keys());
+                let right_digest = digest_set_from_set(&r.keys());
                 let new_acc = DynamicAccumulator::incremental_union(
                     l.acc(),
                     r.acc(),
@@ -227,8 +227,8 @@ impl AccumulatorTree {
                 let r = Self::node_revive_recursive(right, target_key, new_fid);
                 let new_keys = Rc::new(l.keys().union(&r.keys()));
 
-                let left_digest = DigestSet::new(&l.keys());
-                let right_digest = DigestSet::new(&r.keys());
+                let left_digest = digest_set_from_set(&l.keys());
+                let right_digest = digest_set_from_set(&r.keys());
                 let new_acc = DynamicAccumulator::incremental_union(
                     l.acc(),
                     r.acc(),
@@ -255,8 +255,8 @@ impl AccumulatorTree {
 
         let left_acc = left.acc();
         let right_acc = right.acc();
-        let left_digest = DigestSet::new(&left.keys());
-        let right_digest = DigestSet::new(&right.keys());
+        let left_digest = digest_set_from_set(&left.keys());
+        let right_digest = digest_set_from_set(&right.keys());
 
         let new_acc =
             DynamicAccumulator::incremental_union(left_acc, right_acc, &left_digest, &right_digest);
@@ -380,7 +380,7 @@ impl AccumulatorTree {
             crate::crypto::empty_acc()
         } else {
             // Calculate accumulator commitment for all keys
-            let digest_set = accumulator_ads::DigestSet::new(&all_keys);
+            let digest_set = accumulator_ads::digest_set_from_set(&all_keys);
             accumulator_ads::DynamicAccumulator::calculate_commitment(&digest_set)
         };
 
@@ -409,7 +409,7 @@ impl AccumulatorTree {
                 // create accumulator membership witness for the key
                 let acc_val = r.acc();
                 let key_set = accumulator_ads::Set::from_vec(vec![key.to_string()]);
-                let key_digest_set = accumulator_ads::DigestSet::new(&key_set);
+                let key_digest_set = accumulator_ads::digest_set_from_set(&key_set);
                 let key_elem = *key_digest_set.iter().next().unwrap();
                 let acc_inst = accumulator_ads::DynamicAccumulator { acc_value: acc_val };
                 let acc_witness = acc_inst

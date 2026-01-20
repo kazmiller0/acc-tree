@@ -16,8 +16,7 @@ use ark_poly::{
 use std::ops::Neg;
 
 use super::proofs::{MembershipProof, NonMembershipProof};
-use crate::acc::digest_set::DigestSet;
-use crate::acc::utils::{poly_to_g1, poly_to_g2};
+use crate::acc::utils::{expand_to_poly, poly_to_g1, poly_to_g2};
 // 假设 PRI_S 在生产构建中也是可见的，请确保该模块在正式编译中可用
 use super::setup::PRI_S;
 
@@ -55,20 +54,20 @@ impl DynamicAccumulator {
 
     /// Static method: Fast calculation of set commitment using MSM.
     /// Used when initializing from a large set from scratch.
-    pub fn calculate_commitment(set: &DigestSet<Fr>) -> G1Affine {
-        poly_to_g1(set.expand_to_poly())
+    pub fn calculate_commitment(elements: &[Fr]) -> G1Affine {
+        poly_to_g1(expand_to_poly(elements))
     }
 
-    /// Factory method: Initialize accumulator from a DigestSet.
-    pub fn from_set(set: &DigestSet<Fr>) -> Self {
+    /// Factory method: Initialize accumulator from field elements.
+    pub fn from_set(elements: &[Fr]) -> Self {
         Self {
-            acc_value: Self::calculate_commitment(set),
+            acc_value: Self::calculate_commitment(elements),
         }
     }
 
     /// Helper: Compute G2 commitment
-    pub fn calculate_commitment_g2(set: &DigestSet<Fr>) -> G2Affine {
-        poly_to_g2(set.expand_to_poly())
+    pub fn calculate_commitment_g2(elements: &[Fr]) -> G2Affine {
+        poly_to_g2(expand_to_poly(elements))
     }
 
     // ==========================================
@@ -137,8 +136,8 @@ impl DynamicAccumulator {
     pub fn incremental_union(
         acc1: G1Affine,
         _acc2: G1Affine,
-        set1: &DigestSet<Fr>,
-        set2: &DigestSet<Fr>,
+        set1: &[Fr],
+        set2: &[Fr],
     ) -> G1Affine {
         let new_elements: Vec<Fr> = set2.iter().filter(|e| !set1.contains(e)).copied().collect();
 
@@ -164,10 +163,10 @@ impl DynamicAccumulator {
     /// Returns (witness=g2^B(s), g2_a=g2^A(s)) where A(x)P(x) + B(x)(x-element) = 1
     pub fn compute_non_membership_witness(
         element: Fr,
-        set: &DigestSet<Fr>,
+        elements: &[Fr],
     ) -> Result<(G2Affine, G2Affine)> {
         // 1. Construct P(X)
-        let p_poly = set.expand_to_poly();
+        let p_poly = expand_to_poly(elements);
 
         // 2. Construct (X - element)
         let elem_poly = DensePolynomial::from_coefficients_vec(vec![element.neg(), Fr::one()]);
@@ -185,13 +184,13 @@ impl DynamicAccumulator {
 
     /// Computes witnesses for intersection proof.
     pub fn compute_intersection_witnesses(
-        set1: &DigestSet<Fr>,
-        set2: &DigestSet<Fr>,
-        intersection_set: &DigestSet<Fr>,
+        set1: &[Fr],
+        set2: &[Fr],
+        intersection_set: &[Fr],
     ) -> Result<(G2Affine, G2Affine, G1Affine, G1Affine)> {
-        let p1_poly = set1.expand_to_poly();
-        let p2_poly = set2.expand_to_poly();
-        let p_intersect_poly = intersection_set.expand_to_poly();
+        let p1_poly = expand_to_poly(set1);
+        let p2_poly = expand_to_poly(set2);
+        let p_intersect_poly = expand_to_poly(intersection_set);
 
         // Helper closure for exact division
         let divide_exact = |num: &DensePolynomial<Fr>,
@@ -227,11 +226,11 @@ impl DynamicAccumulator {
 
     /// Computes witnesses for disjointness proof.
     pub fn compute_disjointness_witnesses(
-        set1: &DigestSet<Fr>,
-        set2: &DigestSet<Fr>,
+        set1: &[Fr],
+        set2: &[Fr],
     ) -> Result<(G2Affine, G2Affine)> {
-        let poly1 = set1.expand_to_poly();
-        let poly2 = set2.expand_to_poly();
+        let poly1 = expand_to_poly(set1);
+        let poly2 = expand_to_poly(set2);
 
         let (x_poly, y_poly) = crate::acc::utils::solve_bezout_identity(poly1, poly2)
             .context("Sets are not disjoint")?;

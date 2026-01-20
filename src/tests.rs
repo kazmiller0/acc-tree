@@ -1,5 +1,5 @@
 use super::*;
-use accumulator_ads::{DigestSet, DynamicAccumulator, Set};
+use accumulator_ads::{digest_set_from_set, DynamicAccumulator, Set};
 use std::sync::Once;
 
 static INIT: Once = Once::new();
@@ -24,7 +24,8 @@ fn init_test_params() {
 // Helper function to calculate accumulator for a Set
 fn cal_acc_g1(keys: &Set<String>) -> accumulator_ads::G1Affine {
     init_test_params();
-    DynamicAccumulator::calculate_commitment(&DigestSet::new(keys))
+    let digest_set = digest_set_from_set(keys);
+    DynamicAccumulator::calculate_commitment(&digest_set)
 }
 
 // Helper function to verify membership

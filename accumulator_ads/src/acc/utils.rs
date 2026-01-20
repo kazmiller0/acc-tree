@@ -8,9 +8,11 @@
 //! It is strictly for:
 //! - Pure math algorithms (e.g., XGCD, FixedBasePow)
 //! - Low-level type conversions (e.g., Digest -> Field)
+//! - Set transformations and polynomial expansions
 
-use crate::acc::setup::{get_g1s, get_g2s};
 use crate::digest::{Digest, Digestible};
+use crate::set::{Set, SetElement};
+use crate::acc::setup::{get_g1s, get_g2s};
 use ark_bls12_381::{Fr, G1Affine, G2Affine};
 use ark_ec::{msm::VariableBaseMSM, ProjectiveCurve};
 use ark_ff::{BigInteger, Field, FpParameters, PrimeField, ToBytes, Zero};
@@ -20,7 +22,61 @@ use ark_poly::{
 };
 use log::trace;
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::iter;
+
+// ==========================================
+// Set Transformation Functions
+// ==========================================
+
+/// Convert a Set<T> to Vec<F> by hashing each element to prime field.
+/// Uses parallel iteration for performance.
+pub fn digest_set_from_set<T: SetElement, F: PrimeField>(input: &Set<T>) -> Vec<F> {
+    let elements: Vec<&T> = input.iter().collect();
+    let mut result: Vec<F> = Vec::with_capacity(elements.len());
+    
+    (0..elements.len())
+        .into_par_iter()
+        .map(|i| {
+            let k = elements[i];
+            let d = k.to_digest();
+            digest_to_prime_field(&d)
+        })
+        .collect_into_vec(&mut result);
+    
+    result
+}
+
+/// Expand a slice of field elements to polynomial ∏(X - xᵢ).
+/// Uses parallel divide-and-conquer for performance.
+pub fn expand_to_poly<F: PrimeField>(elements: &[F]) -> DensePolynomial<F> {
+    let mut inputs = Vec::new();
+    for k in elements {
+        inputs.push(DensePolynomial::from_coefficients_vec(vec![
+            k.neg(),
+            F::one(),
+        ]));
+    }
+
+    fn expand<'a, F: PrimeField>(
+        polys: &'a [DensePolynomial<F>],
+    ) -> Cow<'a, DensePolynomial<F>> {
+        if polys.is_empty() {
+            return Cow::Owned(DensePolynomial::from_coefficients_vec(vec![F::one()]));
+        } else if polys.len() == 1 {
+            return Cow::Borrowed(&polys[0]);
+        }
+        let mid = polys.len() / 2;
+        let (left, right) = rayon::join(|| expand(&polys[..mid]), || expand(&polys[mid..]));
+        Cow::Owned(left.as_ref() * right.as_ref())
+    }
+
+    expand(&inputs).into_owned()
+}
+
+// ==========================================
+// Type Conversion Functions
+// ==========================================
 
 impl Digestible for G1Affine {
     fn to_digest(&self) -> Digest {

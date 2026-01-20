@@ -3,10 +3,9 @@ use ark_bls12_381::{Bls12_381 as Curve, Fr, G1Affine, G2Affine};
 use ark_ec::{AffineCurve, PairingEngine};
 use serde::{Deserialize, Serialize};
 
-use crate::acc::digest_set::DigestSet;
 use crate::acc::dynamic_accumulator::DynamicAccumulator;
 use crate::acc::serde_impl;
-use crate::acc::setup::{E_G_G, get_g1s, get_g2s};
+use crate::acc::setup::{get_g1s, get_g2s, E_G_G};
 use ark_ec::ProjectiveCurve;
 use std::ops::Neg;
 
@@ -38,17 +37,18 @@ impl AddProof {
     /// Verifies that the new accumulator is the result of adding the element to the old one.
     /// Uses PUBLIC pairing verification: e(new_acc, g2) = e(old_acc, g2^(s-element))
     /// This is equivalent to: new_acc = old_acc^(s-element)
-    /// 
+    ///
     /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self) -> bool {
         let g2 = G2Affine::prime_subgroup_generator();
         let g2_s = get_g2s(1_usize); // g2^s from public parameters
-        
+
         // Compute g2^(-element) = g2^{-element}
         let g2_neg_elem = g2.mul(self.element.neg()).into_affine();
-        
+
         // Compute g2^(s-element) = g2^s * g2^{-element}
-        let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
+        let g2_s_minus_elem =
+            (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
 
         let lhs = Curve::pairing(self.new_acc_value, g2);
         let rhs = Curve::pairing(self.old_acc_value, g2_s_minus_elem);
@@ -85,17 +85,18 @@ impl DeleteProof {
     /// Verifies that the new accumulator is the result of deleting the element from the old one.
     /// Uses PUBLIC pairing verification: e(new_acc, g2^(s-element)) = e(old_acc, g2)
     /// This is equivalent to: new_acc^(s-element) = old_acc
-    /// 
+    ///
     /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self) -> bool {
         let g2 = G2Affine::prime_subgroup_generator();
         let g2_s = get_g2s(1_usize); // g2^s from public parameters
-        
+
         // Compute g2^(-element)
         let g2_neg_elem = g2.mul(self.element.neg()).into_affine();
-        
+
         // Compute g2^(s-element) = g2^s * g2^{-element}
-        let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
+        let g2_s_minus_elem =
+            (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
 
         let lhs = Curve::pairing(self.new_acc_value, g2_s_minus_elem);
         let rhs = Curve::pairing(self.old_acc_value, g2);
@@ -134,12 +135,12 @@ impl UpdateProof {
 
     /// Verifies that the new accumulator is the result of updating old_element to new_element.
     /// Verification: e(new_acc, g2^(s-old_element)) = e(old_acc, g2^(s-new_element))
-    /// 
+    ///
     /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self) -> bool {
         let g2 = G2Affine::prime_subgroup_generator();
         let g2_s = get_g2s(1_usize); // g2^s from public parameters
-        
+
         // Compute g2^(s-old_element)
         let g2_neg_old = g2.mul(self.old_element.neg()).into_affine();
         let g2_s_minus_old = (g2_s.into_projective() + g2_neg_old.into_projective()).into_affine();
@@ -173,18 +174,19 @@ impl MembershipProof {
     /// Verifies that this proof is valid for the given accumulator value.
     /// Uses PUBLIC pairing verification: e(witness, g2^(s-element)) = e(accumulator, g2)
     /// This verifies that witness^(s-element) = accumulator, proving membership.
-    /// 
+    ///
     /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     /// This enables PUBLIC VERIFIABILITY - anyone can verify membership.
     pub fn verify(&self, accumulator: G1Affine) -> bool {
         let g2 = G2Affine::prime_subgroup_generator();
         let g2_s = get_g2s(1_usize); // g2^s from public parameters
-        
+
         // Compute g2^(-element)
         let g2_neg_elem = g2.mul(self.element.neg()).into_affine();
-        
+
         // Compute g2^(s-element) = g2^s * g2^{-element}
-        let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
+        let g2_s_minus_elem =
+            (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
 
         let lhs = Curve::pairing(self.witness, g2_s_minus_elem);
         let rhs = Curve::pairing(accumulator, g2);
@@ -207,8 +209,9 @@ pub struct NonMembershipProof {
 }
 
 impl NonMembershipProof {
-    pub fn new(element: Fr, set: &DigestSet<Fr>) -> Result<Self> {
-        let (witness, g2_a) = DynamicAccumulator::compute_non_membership_witness(element, set)?;
+    pub fn new(element: Fr, elements: &[Fr]) -> Result<Self> {
+        let (witness, g2_a) =
+            DynamicAccumulator::compute_non_membership_witness(element, elements)?;
         Ok(Self {
             element,
             witness,
@@ -218,17 +221,18 @@ impl NonMembershipProof {
 
     /// Verifies non-membership using Bezout's identity: A(s)*P(s) + B(s)*(s-x) = 1
     /// Check: e(Acc, g2^A) * e(g1^(s-x), g2^B) = e(g1, g2)
-    /// 
+    ///
     /// SECURITY: Uses ONLY public parameters. No secret knowledge required.
     pub fn verify(&self, acc_value: G1Affine) -> bool {
         let g1 = G1Affine::prime_subgroup_generator();
         let g1_s = get_g1s(1_usize); // g1^s from public parameters
-        
+
         // Compute g1^(-element)
         let g1_neg_elem = g1.mul(self.element.neg()).into_affine();
-        
+
         // Compute g1^(s-element) = g1^s * g1^{-element}
-        let g1_s_minus_elem = (g1_s.into_projective() + g1_neg_elem.into_projective()).into_affine();
+        let g1_s_minus_elem =
+            (g1_s.into_projective() + g1_neg_elem.into_projective()).into_affine();
 
         // Check: e(Acc, g2^A) * e(g1^(s-x), g2^B) = e(g1, g2)
         let lhs1 = Curve::pairing(acc_value, self.g2_a);
@@ -257,9 +261,9 @@ pub struct IntersectionProof {
 
 impl IntersectionProof {
     pub fn new(
-        set1: &DigestSet<Fr>,
-        set2: &DigestSet<Fr>,
-        intersection_set: &DigestSet<Fr>,
+        set1: &[Fr],
+        set2: &[Fr],
+        intersection_set: &[Fr],
     ) -> Result<(DynamicAccumulator, Self)> {
         // 1. Create the intersection accumulator
         let intersection_acc = DynamicAccumulator::from_set(intersection_set);
@@ -314,7 +318,7 @@ impl UnionProof {
     pub fn new(
         intersection_acc: &DynamicAccumulator,
         intersection_proof: IntersectionProof,
-        union_set: &DigestSet<Fr>,
+        union_set: &[Fr],
     ) -> Result<(DynamicAccumulator, Self)> {
         // Reconstruct union accumulator
         let union_acc = DynamicAccumulator::from_set(union_set);
@@ -363,7 +367,7 @@ pub struct DisjointnessProof {
 }
 
 impl DisjointnessProof {
-    pub fn new(set1: &DigestSet<Fr>, set2: &DigestSet<Fr>) -> Result<Self> {
+    pub fn new(set1: &[Fr], set2: &[Fr]) -> Result<Self> {
         let (f1, f2) = DynamicAccumulator::compute_disjointness_witnesses(set1, set2)?;
         Ok(Self { f1, f2 })
     }
@@ -379,13 +383,14 @@ impl DisjointnessProof {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acc::utils::digest_set_from_set;
     use crate::set::Set;
 
     #[test]
     fn test_update_proof() {
         // Create an initial set with some elements
         let initial_set = Set::from_vec(vec![1u64, 2, 3, 4, 5]);
-        let digest_set = DigestSet::new(&initial_set);
+        let digest_set = digest_set_from_set(&initial_set);
         let mut acc = DynamicAccumulator::from_set(&digest_set);
         let initial_acc_value = acc.acc_value;
 
@@ -411,7 +416,7 @@ mod tests {
     fn test_update_equals_delete_then_add() {
         // Create an initial set
         let initial_set = Set::from_vec(vec![10u64, 20, 30]);
-        let digest_set = DigestSet::new(&initial_set);
+        let digest_set = digest_set_from_set(&initial_set);
 
         let mut acc1 = DynamicAccumulator::from_set(&digest_set);
         let mut acc2 = DynamicAccumulator::from_set(&digest_set);

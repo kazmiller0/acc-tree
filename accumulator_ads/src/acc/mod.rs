@@ -1,4 +1,3 @@
-pub mod digest_set;
 pub mod dynamic_accumulator;
 pub mod proofs;
 pub mod serde_impl;
@@ -8,9 +7,9 @@ pub mod utils;
 pub use ark_bls12_381::{
     Bls12_381 as Curve, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective,
 };
-pub type DigestSet = digest_set::DigestSet<Fr>;
 
 // Re-export main components
+pub use utils::{digest_set_from_set, expand_to_poly};
 pub use dynamic_accumulator::{DynamicAccumulator, QueryResult};
 pub use proofs::*;
 pub use setup::{E_G_G, PublicParameters, init_public_parameters, init_public_parameters_direct, 
@@ -19,6 +18,7 @@ pub use setup::{E_G_G, PublicParameters, init_public_parameters, init_public_par
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acc::utils::digest_set_from_set;
     use crate::set::Set;
 
     fn init_logger() {
@@ -32,8 +32,8 @@ mod tests {
 
         // Create a test element
         let set_elem = Set::from_vec(vec![42]);
-        let ds = DigestSet::new(&set_elem);
-        let elem = ds.inner[0]; // Get the Fr element
+        let ds = digest_set_from_set(&set_elem);
+        let elem = ds[0]; // Get the Fr element
 
         // 1. Prove Add
         // Acc: {} -> {42}
@@ -55,7 +55,7 @@ mod tests {
         // 4. Prove Non-Membership (post-delete)
         // Note: For non-membership, we need the SET that represents the accumulator state.
         // After clean delete, acc is empty set.
-        let empty_set = DigestSet::new(&Set::<i32>::from_vec(vec![]));
+        let empty_set = digest_set_from_set(&Set::<i32>::from_vec(vec![]));
         let non_mem_proof =
             NonMembershipProof::new(elem, &empty_set).expect("NonMembership failed");
         assert!(
@@ -67,9 +67,9 @@ mod tests {
     #[test]
     fn test_disjointness_proof() {
         init_logger();
-        let set1 = DigestSet::new(&Set::from_vec(vec![1, 2, 3]));
-        let set2 = DigestSet::new(&Set::from_vec(vec![4, 5, 6]));
-        let set3 = DigestSet::new(&Set::from_vec(vec![1]));
+        let set1 = digest_set_from_set(&Set::from_vec(vec![1, 2, 3]));
+        let set2 = digest_set_from_set(&Set::from_vec(vec![4, 5, 6]));
+        let set3 = digest_set_from_set(&Set::from_vec(vec![1]));
 
         // Test disjoint sets (Success)
         let proof =
@@ -91,10 +91,10 @@ mod tests {
     #[test]
     fn test_intersection_and_union() {
         init_logger();
-        let s1 = DigestSet::new(&Set::from_vec(vec![1, 2, 3, 4]));
-        let s2 = DigestSet::new(&Set::from_vec(vec![3, 4, 5, 6]));
-        let s_inter = DigestSet::new(&Set::from_vec(vec![3, 4]));
-        let s_union = DigestSet::new(&Set::from_vec(vec![1, 2, 3, 4, 5, 6]));
+        let s1 = digest_set_from_set(&Set::from_vec(vec![1, 2, 3, 4]));
+        let s2 = digest_set_from_set(&Set::from_vec(vec![3, 4, 5, 6]));
+        let s_inter = digest_set_from_set(&Set::from_vec(vec![3, 4]));
+        let s_union = digest_set_from_set(&Set::from_vec(vec![1, 2, 3, 4, 5, 6]));
 
         let acc1_val = DynamicAccumulator::calculate_commitment(&s1);
         let acc2_val = DynamicAccumulator::calculate_commitment(&s2);
