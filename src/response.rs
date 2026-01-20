@@ -1,5 +1,5 @@
 use crate::{Hash, proof::Proof};
-use accumulator_ads::{G1Affine, MembershipProof, digest_set_from_set, Set};
+use accumulator_ads::{G1Affine, MembershipProof, Set, digest_set_from_set};
 
 /// Non-membership proof using cryptographic accumulator
 /// This proves that a key is NOT in the accumulated set using Bézout coefficients
@@ -172,6 +172,45 @@ impl InsertResponse {
             post_membership_witness,
             pre_nonmembership,
         }
+    }
+
+    /// Verify that the insertion was well-formed.
+    /// Checks:
+    /// 1. Pre-insertion non-membership proof validates (if present)
+    /// 2. Post-insertion Merkle proof validates
+    /// 3. Post-insertion accumulator membership holds
+    /// 4. Post-proof matches the inserted key and FID set
+    pub fn verify_insert(&self) -> bool {
+        // 1. Verify pre-insertion non-membership proof (if present)
+        if let Some(nm_proof) = &self.pre_nonmembership {
+            if !nm_proof.verify(&self.key) {
+                return false; // Key was already in tree before insertion
+            }
+        }
+
+        // 2. Verify post-insertion Merkle proof
+        if let Some(post_p) = &self.post_proof {
+            if !post_p.verify() {
+                return false;
+            }
+            // Verify the post-proof matches the inserted key and FID set
+            if !post_p.verify_with_kv(&self.key, &self.fids) {
+                return false;
+            }
+        } else {
+            return false; // Post-proof must be present
+        }
+
+        // 3. Verify accumulator membership for post-state
+        if let (Some(acc), Some(w)) = (&self.post_accumulator, &self.post_membership_witness) {
+            if !verify_membership(acc, w, &self.key) {
+                return false;
+            }
+        } else {
+            return false; // Post accumulator and witness must be present
+        }
+
+        true
     }
 }
 

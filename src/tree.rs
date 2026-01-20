@@ -216,7 +216,10 @@ impl AccumulatorTree {
         }
         // check if the old_fid exists in the set
         if !old_fids.as_ref().unwrap().contains(&old_fid.to_string()) {
-            return Err(format!("old_fid '{}' not found in key '{}' for update", old_fid, key));
+            return Err(format!(
+                "old_fid '{}' not found in key '{}' for update",
+                old_fid, key
+            ));
         }
         // capture pre acc/root
         let pre_acc = pre_qr.accumulator;
@@ -283,7 +286,10 @@ impl AccumulatorTree {
         }
         // check if the fid exists in the set
         if !old_fids.as_ref().unwrap().contains(&fid.to_string()) {
-            return Err(format!("fid '{}' not found in key '{}' for delete", fid, key));
+            return Err(format!(
+                "fid '{}' not found in key '{}' for delete",
+                fid, key
+            ));
         }
         let pre_proof = pre_qr.proof;
         let pre_acc = pre_qr.accumulator;
@@ -311,9 +317,9 @@ impl AccumulatorTree {
                 let post_root_hash = root_h;
                 return Ok(crate::response::DeleteResponse::new(
                     key.to_string(),
-                    fid.to_string(),          // deleted_fid
-                    old_fids,                 // old_fids
-                    post_fids,                // new_fids
+                    fid.to_string(), // deleted_fid
+                    old_fids,        // old_fids
+                    post_fids,       // new_fids
                     pre_proof,
                     pre_acc,
                     pre_acc_witness,
@@ -339,7 +345,12 @@ impl AccumulatorTree {
     }
 
     #[cfg(test)]
-    pub fn test_update_fid_recursive(node: &mut Node, key: &str, old_fid: &str, new_fid: String) -> bool {
+    pub fn test_update_fid_recursive(
+        node: &mut Node,
+        key: &str,
+        old_fid: &str,
+        new_fid: String,
+    ) -> bool {
         node.update_fid(key, old_fid, new_fid)
     }
 
