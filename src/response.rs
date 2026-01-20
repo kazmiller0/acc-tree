@@ -177,11 +177,15 @@ impl InsertResponse {
 
 #[derive(Debug, Clone)]
 pub struct UpdateResponse {
-    /// key updated
+    /// key where the FID was updated
     pub key: String,
-    /// fids before update
+    /// the specific old FID that was replaced
+    pub old_fid: String,
+    /// the new FID that replaced the old one
+    pub new_fid: String,
+    /// complete FID set before update
     pub old_fids: Option<Set<String>>,
-    /// fids after update
+    /// complete FID set after update
     pub new_fids: Set<String>,
     /// membership proof for the leaf before update
     pub pre_proof: Option<Proof>,
@@ -204,6 +208,8 @@ pub struct UpdateResponse {
 impl UpdateResponse {
     pub fn new(
         key: String,
+        old_fid: String,
+        new_fid: String,
         old_fids: Option<Set<String>>,
         new_fids: Set<String>,
         pre_proof: Option<Proof>,
@@ -217,6 +223,8 @@ impl UpdateResponse {
     ) -> Self {
         Self {
             key,
+            old_fid,
+            new_fid,
             old_fids,
             new_fids,
             pre_proof,
@@ -230,23 +238,54 @@ impl UpdateResponse {
         }
     }
 
-    /// Verify that the update was well-formed: pre/post proofs are valid and the
-    /// Merkle path siblings match (i.e. only the leaf changed), and accumulator
-    /// membership holds for old/new values respectively when provided.
+    /// Verify that the update was well-formed: validates that a specific FID was replaced.
+    /// Checks:
+    /// 1. The old_fid existed in the old FID set
+    /// 2. The new FID set = old FID set - old_fid + new_fid
+    /// 3. Merkle proofs validate (pre and post)
+    /// 4. Sibling paths match (only leaf content changed, not structure)
+    /// 5. Accumulator membership holds for the key in both states
     pub fn verify_update(&self) -> bool {
-        // verify pre proof if present
-        if let Some(pre_p) = &self.pre_proof
-            && !pre_p.verify()
-        {
-            return false;
+        // 1. Verify the old_fid was in the old set
+        if let Some(old) = &self.old_fids {
+            if !old.contains(&self.old_fid) {
+                return false; // old_fid wasn't there to begin with
+            }
+
+            // 2. Verify new_fids = (old_fids - old_fid) + new_fid
+            let expected_new = old
+                .difference(&Set::from_vec(vec![self.old_fid.clone()]))
+                .union(&Set::from_vec(vec![self.new_fid.clone()]));
+            if self.new_fids != expected_new {
+                return false; // Incorrect FID set transition
+            }
+        } else {
+            return false; // No old FIDs means nothing to update
         }
 
-        // verify post proof
+        // 3. Verify pre proof if present
+        if let Some(pre_p) = &self.pre_proof {
+            if !pre_p.verify() {
+                return false;
+            }
+            // Also verify the pre-proof matches the old FID set
+            if let Some(old) = &self.old_fids {
+                if !pre_p.verify_with_kv(&self.key, old) {
+                    return false;
+                }
+            }
+        }
+
+        // 4. Verify post proof
         if !self.post_proof.verify() {
             return false;
         }
+        // Verify post-proof matches the new FID set
+        if !self.post_proof.verify_with_kv(&self.key, &self.new_fids) {
+            return false;
+        }
 
-        // sibling paths (excluding leaf_hash) should match between pre and post
+        // 5. Sibling paths should match between pre and post (structure unchanged)
         if let Some(pre_p) = &self.pre_proof {
             if pre_p.path.len() != self.post_proof.path.len() {
                 return false;
@@ -259,12 +298,11 @@ impl UpdateResponse {
             }
         }
 
-        // verify accumulator membership: pre (old) and post (new)
-        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
-            && let Some(_old) = &self.old_fids
-            && !verify_membership(acc, w, &self.key)
-        {
-            return false;
+        // 6. Verify accumulator membership for both pre and post states
+        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness) {
+            if !verify_membership(acc, w, &self.key) {
+                return false;
+            }
         }
 
         if !verify_membership(
@@ -281,19 +319,23 @@ impl UpdateResponse {
 
 #[derive(Debug, Clone)]
 pub struct DeleteResponse {
-    /// key deleted
+    /// key from which the FID was deleted
     pub key: String,
-    /// fids before deletion
+    /// the specific FID that was deleted
+    pub deleted_fid: String,
+    /// complete FID set before deletion
     pub old_fids: Option<Set<String>>,
+    /// FID set after deletion (empty if leaf is now tombstoned, or remaining FIDs)
+    pub new_fids: Set<String>,
     /// membership proof for the leaf before deletion
     pub pre_proof: Option<Proof>,
     /// accumulator value before deletion (for the root containing the key)
     pub pre_accumulator: Option<G1Affine>,
     /// membership witness for the old element
     pub pre_membership_witness: Option<G1Affine>,
-    /// merkle/path proof for the tombstoned leaf after deletion (leaf hash will be empty_hash)
+    /// merkle/path proof for the leaf after deletion
     pub post_proof: Proof,
-    /// accumulator value after deletion for the root containing the tombstone
+    /// accumulator value after deletion for the root containing the key
     pub post_accumulator: G1Affine,
     /// root hash before deletion (if available)
     pub pre_root_hash: Option<Hash>,
@@ -304,7 +346,9 @@ pub struct DeleteResponse {
 impl DeleteResponse {
     pub fn new(
         key: String,
+        deleted_fid: String,
         old_fids: Option<Set<String>>,
+        new_fids: Set<String>,
         pre_proof: Option<Proof>,
         pre_acc: Option<G1Affine>,
         pre_acc_witness: Option<G1Affine>,
@@ -315,7 +359,9 @@ impl DeleteResponse {
     ) -> Self {
         Self {
             key,
+            deleted_fid,
             old_fids,
+            new_fids,
             pre_proof,
             pre_accumulator: pre_acc,
             pre_membership_witness: pre_acc_witness,
@@ -326,22 +372,53 @@ impl DeleteResponse {
         }
     }
 
-    /// Verify deletion: pre/post proofs validate and sibling paths match (only leaf changed),
-    /// and pre-acc membership holds for the deleted key when provided.
+    /// Verify deletion: validates that a specific FID was removed from the key's FID set.
+    /// Checks:
+    /// 1. The deleted FID existed in the old FID set
+    /// 2. The new FID set = old FID set - deleted FID
+    /// 3. Merkle proofs validate (pre and post)
+    /// 4. Sibling paths match (only leaf content changed, not structure)
+    /// 5. Accumulator membership holds for the key in pre-state
+    /// 6. Post-state hash matches the new FID set (or empty_hash if tombstoned)
     pub fn verify_delete(&self) -> bool {
-        // verify pre proof if present
-        if let Some(pre_p) = &self.pre_proof
-            && !pre_p.verify()
-        {
-            return false;
+        // 1. Verify the deleted FID was in the old set
+        if let Some(old) = &self.old_fids {
+            if !old.contains(&self.deleted_fid) {
+                return false; // FID wasn't there to begin with
+            }
+
+            // 2. Verify new_fids = old_fids - deleted_fid
+            let expected_new = old.difference(&Set::from_vec(vec![self.deleted_fid.clone()]));
+            if self.new_fids != expected_new {
+                return false; // Incorrect FID set transition
+            }
+        } else {
+            return false; // No old FIDs means nothing to delete
         }
 
-        // verify post proof
+        // 3. Verify pre proof if present
+        if let Some(pre_p) = &self.pre_proof {
+            if !pre_p.verify() {
+                return false;
+            }
+            // Also verify the pre-proof matches the old FID set
+            if let Some(old) = &self.old_fids {
+                if !pre_p.verify_with_kv(&self.key, old) {
+                    return false;
+                }
+            }
+        }
+
+        // 4. Verify post proof
         if !self.post_proof.verify() {
             return false;
         }
+        // Verify post-proof matches the new FID set
+        if !self.post_proof.verify_with_kv(&self.key, &self.new_fids) {
+            return false;
+        }
 
-        // sibling paths should match between pre and post
+        // 5. Sibling paths should match between pre and post (structure unchanged)
         if let Some(pre_p) = &self.pre_proof {
             if pre_p.path.len() != self.post_proof.path.len() {
                 return false;
@@ -354,12 +431,11 @@ impl DeleteResponse {
             }
         }
 
-        // verify accumulator membership for pre-state (old element)
-        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
-            && let Some(_old) = &self.old_fids
-            && !verify_membership(acc, w, &self.key)
-        {
-            return false;
+        // 6. Verify accumulator membership for pre-state (key was in tree)
+        if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness) {
+            if !verify_membership(acc, w, &self.key) {
+                return false;
+            }
         }
 
         true

@@ -133,9 +133,9 @@ impl Node {
         }
     }
 
-    /// Build a path-proof for `target_key` within this node.
+    /// Build a path-proof for `target_key` within this node (internal recursive implementation).
     /// `path` is populated with sibling hashes on unwind; each entry is (sibling_hash, sibling_is_left).
-    pub fn select_with_proof(
+    pub fn recurse_select_with_proof(
         &self,
         target_key: &str,
         path: &mut Vec<(Hash, bool)>,
@@ -152,13 +152,13 @@ impl Node {
             }
             Node::NonLeaf { left, right, .. } => {
                 if left.has_key(target_key) {
-                    if let Some(fids) = left.select_with_proof(target_key, path) {
+                    if let Some(fids) = left.recurse_select_with_proof(target_key, path) {
                         path.push((right.hash(), false));
                         return Some(fids);
                     }
                     None
                 } else if right.has_key(target_key) {
-                    if let Some(fids) = right.select_with_proof(target_key, path) {
+                    if let Some(fids) = right.recurse_select_with_proof(target_key, path) {
                         path.push((left.hash(), true));
                         return Some(fids);
                     }
@@ -170,8 +170,8 @@ impl Node {
         }
     }
 
-    /// Build a proof for `target_key` including leaves that may be tombstoned.
-    pub fn select_proof_including_deleted(
+    /// Build a proof for `target_key` including leaves that may be tombstoned (internal recursive implementation).
+    pub fn recurse_select_proof_including_deleted(
         &self,
         target_key: &str,
         path: &mut Vec<(Hash, bool)>,
@@ -185,11 +185,11 @@ impl Node {
                 }
             }
             Node::NonLeaf { left, right, .. } => {
-                if let Some(fids) = left.select_proof_including_deleted(target_key, path) {
+                if let Some(fids) = left.recurse_select_proof_including_deleted(target_key, path) {
                     path.push((right.hash(), false));
                     return Some(fids);
                 }
-                if let Some(fids) = right.select_proof_including_deleted(target_key, path) {
+                if let Some(fids) = right.recurse_select_proof_including_deleted(target_key, path) {
                     path.push((left.hash(), true));
                     return Some(fids);
                 }
@@ -202,37 +202,8 @@ impl Node {
     // Mutation operations
     // ==========================================
 
-    /// Replace the entire fids set for target_key. Returns whether hash changed.
-    pub fn set_fids(&mut self, target_key: &str, new_fids: Set<String>) -> bool {
-        match self {
-            Node::Leaf {
-                fids, key, deleted, ..
-            } => {
-                if key == target_key && !*deleted {
-                    *fids = new_fids;
-                    true
-                } else {
-                    false
-                }
-            }
-            Node::NonLeaf {
-                hash, left, right, ..
-            } => {
-                let changed = if left.has_key(target_key) {
-                    left.set_fids(target_key, new_fids)
-                } else {
-                    right.set_fids(target_key, new_fids)
-                };
-                if changed {
-                    *hash = nonleaf_hash(left.hash(), right.hash());
-                }
-                changed
-            }
-        }
-    }
-
-    /// Add a document ID to the fids set for target_key. Returns whether hash changed.
-    pub fn add_fid(&mut self, target_key: &str, fid: String) -> bool {
+    /// Insert a document ID to the fids set for target_key. Returns whether hash changed.
+    pub fn insert_fid(&mut self, target_key: &str, fid: String) -> bool {
         match self {
             Node::Leaf {
                 fids, key, deleted, ..
@@ -249,9 +220,9 @@ impl Node {
                 hash, left, right, ..
             } => {
                 let changed = if left.has_key(target_key) {
-                    left.add_fid(target_key, fid)
+                    left.insert_fid(target_key, fid)
                 } else {
-                    right.add_fid(target_key, fid)
+                    right.insert_fid(target_key, fid)
                 };
                 if changed {
                     *hash = nonleaf_hash(left.hash(), right.hash());
@@ -261,9 +232,9 @@ impl Node {
         }
     }
 
-    /// Remove a document ID from the fids set for target_key. Returns whether hash changed.
+    /// Delete a document ID from the fids set for target_key. Returns whether hash changed.
     /// If fids becomes empty, the leaf is tombstoned (deleted=true).
-    pub fn remove_fid(&mut self, target_key: &str, fid: &str) -> bool {
+    pub fn delete_fid(&mut self, target_key: &str, fid: &str) -> bool {
         match self {
             Node::Leaf {
                 fids, key, deleted, ..
@@ -283,9 +254,9 @@ impl Node {
                 hash, left, right, ..
             } => {
                 let changed = if left.has_key(target_key) {
-                    left.remove_fid(target_key, fid)
+                    left.delete_fid(target_key, fid)
                 } else {
-                    right.remove_fid(target_key, fid)
+                    right.delete_fid(target_key, fid)
                 };
                 if changed {
                     *hash = nonleaf_hash(left.hash(), right.hash());
@@ -295,37 +266,38 @@ impl Node {
         }
     }
 
-    /// Mark leaf with target_key as deleted (tombstone). Returns new node.
-    pub fn delete(self: Box<Self>, target_key: &str) -> Box<Node> {
-        match *self {
+    /// Update a document ID: replace old_fid with new_fid in the fids set for target_key.
+    /// Returns whether hash changed.
+    pub fn update_fid(&mut self, target_key: &str, old_fid: &str, new_fid: String) -> bool {
+        match self {
             Node::Leaf {
-                key,
-                fids,
-                level,
-                deleted,
+                fids, key, deleted, ..
             } => {
-                if key == target_key && !deleted {
-                    Box::new(Node::Leaf {
-                        key,
-                        fids,
-                        level,
-                        deleted: true,
-                    })
+                if key == target_key && !*deleted {
+                    // Check if old_fid exists
+                    if !fids.contains(&old_fid.to_string()) {
+                        return false;
+                    }
+                    // Remove old_fid and add new_fid
+                    *fids = fids.difference(&Set::from_vec(vec![old_fid.to_string()]));
+                    *fids = fids.union(&Set::from_vec(vec![new_fid]));
+                    true
                 } else {
-                    Box::new(Node::Leaf {
-                        key,
-                        fids,
-                        level,
-                        deleted,
-                    })
+                    false
                 }
             }
             Node::NonLeaf {
-                left, right, level, ..
+                hash, left, right, ..
             } => {
-                let l = left.delete(target_key);
-                let r = right.delete(target_key);
-                Node::merge(l, r, Some(level))
+                let changed = if left.has_key(target_key) {
+                    left.update_fid(target_key, old_fid, new_fid)
+                } else {
+                    right.update_fid(target_key, old_fid, new_fid)
+                };
+                if changed {
+                    *hash = nonleaf_hash(left.hash(), right.hash());
+                }
+                changed
             }
         }
     }
