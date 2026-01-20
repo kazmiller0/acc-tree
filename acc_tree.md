@@ -83,7 +83,7 @@
 
 1. 创建新的 `Node::Leaf`。
 2. 追加到 `roots` 列表。
-3. 触发 `normalize()`：递归合并相同高度的根节点。合并时，父节点的 `acc` 由左右子节点的 `acc` 和 `keys` 集合通过增量算法 (`incremental_union`) 计算得出。
+3. 触发 `normalize()`：递归合并相同高度的根节点。合并时，父节点的 `acc` 通过 `node_merge` 计算：使用 `HashSet.difference()` 找出右子树中不在左子树的键，只对差异部分进行哈希转换和累加器更新，避免全量转换和 O(n×m) 查找。
 
 ### 4.2 更新 (Update)
 

@@ -166,7 +166,9 @@ impl AccumulatorTree {
                     })
                 }
             }
-            Node::NonLeaf { left, right, level, .. } => {
+            Node::NonLeaf {
+                left, right, level, ..
+            } => {
                 let l = Self::node_delete_recursive(left, target_key);
                 let r = Self::node_delete_recursive(right, target_key);
                 Self::node_merge(l, r, Some(level))
@@ -199,7 +201,9 @@ impl AccumulatorTree {
                     })
                 }
             }
-            Node::NonLeaf { left, right, level, .. } => {
+            Node::NonLeaf {
+                left, right, level, ..
+            } => {
                 let l = Self::node_revive_recursive(left, target_key, new_fid);
                 let r = Self::node_revive_recursive(right, target_key, new_fid);
                 Self::node_merge(l, r, Some(level))
@@ -215,9 +219,7 @@ impl AccumulatorTree {
         let left_acc = left.acc();
 
         // Optimize: Only convert the difference (right - left) to Vec<Fr>
-        // Using HashSet.difference() is O(n), much faster than:
-        // 1. Converting both full sets to Vec<Fr>
-        // 2. Doing O(n*m) contains() checks in incremental_union
+        // Using HashSet.difference() is O(n), much faster than converting both full sets
         let diff_elements = right.keys().difference(&left.keys());
         let diff_fr = digest_set_from_set(&diff_elements);
         let new_acc = DynamicAccumulator::incremental_add_elements(left_acc, &diff_fr);

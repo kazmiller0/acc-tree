@@ -1,5 +1,5 @@
 use crate::{Hash, proof::Proof};
-use accumulator_ads::{G1Affine, digest_set_from_set};
+use accumulator_ads::{G1Affine, digest_set_from_set, MembershipProof};
 
 /// Non-membership proof using cryptographic accumulator
 /// This proves that a key is NOT in the accumulated set using Bézout coefficients
@@ -55,29 +55,24 @@ impl NonMembershipProof {
     }
 }
 
-// Helper to verify membership using pairing
-// This is a re-export from proof module for response verification
-fn verify_membership_internal(acc: &G1Affine, witness: &G1Affine, key: &String) -> bool {
-    use accumulator_ads::Fr;
-    use accumulator_ads::acc::setup::get_g2s;
+/// Helper function to verify membership using accumulator_ads MembershipProof
+/// This delegates all cryptographic verification logic to the underlying library,
+/// following DRY principle and ensuring consistency.
+fn verify_membership(acc: &G1Affine, witness: &G1Affine, key: &String) -> bool {
     use accumulator_ads::acc::utils::digest_to_prime_field;
     use accumulator_ads::digest::Digestible;
-    use ark_bls12_381::{Bls12_381 as Curve, G2Affine};
-    use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
-    use std::ops::Neg;
 
+    // Convert key to field element
     let key_digest = key.to_digest();
-    let key_fr: Fr = digest_to_prime_field(&key_digest);
+    let key_fr = digest_to_prime_field(&key_digest);
 
-    let g2 = G2Affine::prime_subgroup_generator();
-    let g2_s = get_g2s(1_usize);
-    let g2_neg_elem = g2.mul(key_fr.neg()).into_affine();
-    let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
+    // Create membership proof and verify using accumulator_ads
+    let proof = MembershipProof {
+        witness: *witness,
+        element: key_fr,
+    };
 
-    let lhs = Curve::pairing(*witness, g2_s_minus_elem);
-    let rhs = Curve::pairing(*acc, g2);
-
-    lhs == rhs
+    proof.verify(*acc)
 }
 
 #[derive(Debug, Clone)]
@@ -131,7 +126,7 @@ impl QueryResponse {
         // verify accumulator membership: acc + element_commitment == acc (via witness)
         match (&self.accumulator, &self.membership_witness) {
             (Some(acc), Some(witness)) => {
-                verify_membership_internal(acc, witness, &key.to_string())
+                verify_membership(acc, witness, &key.to_string())
             }
             _ => false,
         }
@@ -269,12 +264,12 @@ impl UpdateResponse {
         // verify accumulator membership: pre (old) and post (new)
         if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
             && let Some(_old) = &self.old_fid
-            && !verify_membership_internal(acc, w, &self.key)
+            && !verify_membership(acc, w, &self.key)
         {
             return false;
         }
 
-        if !verify_membership_internal(
+        if !verify_membership(
             &self.post_accumulator,
             &self.post_membership_witness,
             &self.key,
@@ -364,7 +359,7 @@ impl DeleteResponse {
         // verify accumulator membership for pre-state (old element)
         if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
             && let Some(_old) = &self.old_fid
-            && !verify_membership_internal(acc, w, &self.key)
+            && !verify_membership(acc, w, &self.key)
         {
             return false;
         }
