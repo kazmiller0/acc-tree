@@ -1,5 +1,6 @@
-use crate::crypto::{Hash, empty_hash, leaf_hash};
+use crate::crypto::{Hash, empty_hash, leaf_hash_fids};
 use crate::node::Node;
+use accumulator_ads::Set;
 
 pub struct AccumulatorTree {
     pub roots: Vec<Box<Node>>,
@@ -42,8 +43,17 @@ impl AccumulatorTree {
     }
 
     pub fn insert(&mut self, key: String, fid: String) {
-        // If there's an existing leaf for `key`, try to revive it (use `has_key`).
-        if let Some(idx) = self.roots.iter().position(|r| r.has_key(&key)) {
+        // If there's an existing active leaf for `key`, add fid to it
+        if let Some(root) = self.roots.iter_mut().find(|r| r.has_key(&key)) {
+            root.add_fid(&key, fid);
+            return;
+        }
+
+        // If there's a deleted/tombstoned leaf for `key`, revive it
+        if let Some(idx) = self.roots.iter().position(|r| {
+            // Check if any leaf with this key exists (even if deleted)
+            matches!(r.select_proof_including_deleted(&key, &mut Vec::new()), Some(_))
+        }) {
             let root = self.roots.remove(idx);
             let revived = root.revive(&key, &fid);
             self.roots.push(revived);
@@ -51,9 +61,10 @@ impl AccumulatorTree {
             return;
         }
 
+        // Create new leaf
         self.roots.push(Box::new(Node::Leaf {
             key,
-            fid,
+            fids: Set::from_vec(vec![fid]),
             level: 0,
             deleted: false,
         }));
@@ -84,10 +95,11 @@ impl AccumulatorTree {
         let post_acc = qr.accumulator;
         let post_proof = qr.proof;
         let post_acc_witness = qr.membership_witness;
+        let post_fids = qr.fids.unwrap_or_else(|| Set::new());
 
         crate::response::InsertResponse::new(
             key,
-            fid,
+            post_fids,
             pre_roots,
             post_root_hash,
             post_acc,
@@ -133,7 +145,7 @@ impl AccumulatorTree {
         crate::response::NonMembershipProof::new(key.to_string(), global_acc, &all_keys)
     }
 
-    pub fn select(&self, key: &str) -> Option<String> {
+    pub fn select(&self, key: &str) -> Option<Set<String>> {
         for r in &self.roots {
             if let Some(v) = r.select(key) {
                 return Some(v);
@@ -147,8 +159,8 @@ impl AccumulatorTree {
     pub fn select_with_proof(&self, key: &str) -> crate::response::QueryResponse {
         for r in &self.roots {
             let mut path: Vec<(Hash, bool)> = Vec::new();
-            if let Some(fid) = r.select_with_proof(key, &mut path) {
-                let leaf_h = leaf_hash(key, &fid);
+            if let Some(fids) = r.select_with_proof(key, &mut path) {
+                let leaf_h = leaf_hash_fids(key, &fids);
                 let root_h = r.hash();
                 let proof = crate::proof::Proof::new(root_h, leaf_h, path);
                 // create accumulator membership witness for the key
@@ -161,7 +173,7 @@ impl AccumulatorTree {
                     .compute_membership_witness(key_elem)
                     .unwrap_or(acc_val);
                 return crate::response::QueryResponse::new(
-                    Some(fid),
+                    Some(fids),
                     Some(proof),
                     Some(root_h),
                     Some(acc_val),
@@ -175,24 +187,24 @@ impl AccumulatorTree {
         crate::response::QueryResponse::new(None, None, None, None, None, nm)
     }
 
-    pub fn update(&mut self, key: &str, new_fid: String) {
+    pub fn update(&mut self, key: &str, new_fids: Set<String>) {
         if let Some(root) = self.roots.iter_mut().find(|r| r.has_key(key)) {
-            root.update(key, &new_fid);
+            root.set_fids(key, new_fids);
         }
     }
 
     /// Update with proof: returns an `UpdateResponse` capturing pre/post proofs
     /// and accumulator witnesses so a verifier can confirm that only the
-    /// `fid` for `key` changed and the rest of the tree is unchanged.
+    /// `fids` for `key` changed and the rest of the tree is unchanged.
     pub fn update_with_proof(
         &mut self,
         key: &str,
-        new_fid: String,
+        new_fids: Set<String>,
     ) -> Result<crate::response::UpdateResponse, String> {
         // obtain pre-update proof (must exist)
         let pre_qr = self.select_with_proof(key);
-        let old_fid = pre_qr.fid.clone();
-        if old_fid.is_none() {
+        let old_fids = pre_qr.fids.clone();
+        if old_fids.is_none() {
             return Err(format!("key '{}' not found for update", key));
         }
         // capture pre acc/root
@@ -202,11 +214,11 @@ impl AccumulatorTree {
         let pre_proof = pre_qr.proof;
 
         // perform the update
-        self.update(key, new_fid.clone());
+        self.update(key, new_fids.clone());
 
         // obtain post-update proof
         let post_qr = self.select_with_proof(key);
-        if post_qr.fid.is_none() {
+        if post_qr.fids.is_none() {
             return Err("post-update: key missing after update".to_string());
         }
         let post_proof = post_qr.proof.expect("post proof present");
@@ -218,8 +230,8 @@ impl AccumulatorTree {
 
         Ok(crate::response::UpdateResponse::new(
             key.to_string(),
-            old_fid,
-            new_fid,
+            old_fids,
+            new_fids,
             pre_proof,
             pre_acc,
             pre_acc_witness,
@@ -249,8 +261,8 @@ impl AccumulatorTree {
     ) -> Result<crate::response::DeleteResponse, String> {
         // capture pre-state proof (must exist)
         let pre_qr = self.select_with_proof(key);
-        let old_fid = pre_qr.fid.clone();
-        if old_fid.is_none() {
+        let old_fids = pre_qr.fids.clone();
+        if old_fids.is_none() {
             return Err(format!("key '{}' not found for delete", key));
         }
         let pre_proof = pre_qr.proof;
@@ -264,7 +276,7 @@ impl AccumulatorTree {
         // find post-state proof including tombstoned leaf
         for r in self.roots.iter() {
             let mut path: Vec<(Hash, bool)> = Vec::new();
-            if let Some(_fid) = r.select_proof_including_deleted(key, &mut path) {
+            if let Some(_fids) = r.select_proof_including_deleted(key, &mut path) {
                 let root_h = r.hash();
                 // after deletion the leaf's hash should be empty_hash()
                 let leaf_h = empty_hash();
@@ -273,7 +285,7 @@ impl AccumulatorTree {
                 let post_root_hash = root_h;
                 return Ok(crate::response::DeleteResponse::new(
                     key.to_string(),
-                    old_fid,
+                    old_fids,
                     pre_proof,
                     pre_acc,
                     pre_acc_witness,
@@ -304,8 +316,8 @@ impl AccumulatorTree {
     }
 
     #[cfg(test)]
-    pub fn test_update_recursive(node: &mut Node, key: &str, fid: &str) -> bool {
-        node.update(key, fid)
+    pub fn test_update_recursive(node: &mut Node, key: &str, fids: Set<String>) -> bool {
+        node.set_fids(key, fids)
     }
 
     #[cfg(test)]

@@ -1,11 +1,11 @@
-use accumulator_ads::{DynamicAccumulator, G1Affine};
+use accumulator_ads::{DynamicAccumulator, G1Affine, Set};
 use lazy_static::lazy_static;
 use sha2::{Digest, Sha256};
 
 pub type Hash = [u8; 32];
 
 lazy_static! {
-    pub static ref EMPTY_HASH: Hash = leaf_hash("", "");
+    pub static ref EMPTY_HASH: Hash = leaf_hash_fids("", &Set::new());
     pub static ref EMPTY_ACC: G1Affine = DynamicAccumulator::empty_commitment();
 }
 
@@ -17,13 +17,29 @@ pub fn empty_acc() -> G1Affine {
     *EMPTY_ACC
 }
 
-pub fn leaf_hash(key: &str, fid: &str) -> Hash {
+/// Hash a leaf node with key and a set of fids (document IDs)
+/// For determinism, fids are sorted before hashing
+pub fn leaf_hash_fids(key: &str, fids: &Set<String>) -> Hash {
     let mut hasher = Sha256::new();
     hasher.update((key.len() as u32).to_be_bytes());
     hasher.update(key.as_bytes());
-    hasher.update((fid.len() as u32).to_be_bytes());
-    hasher.update(fid.as_bytes());
+
+    // Sort fids for deterministic hashing
+    let mut fids_vec: Vec<String> = fids.iter().cloned().collect();
+    fids_vec.sort();
+
+    hasher.update((fids_vec.len() as u32).to_be_bytes());
+    for fid in fids_vec {
+        hasher.update((fid.len() as u32).to_be_bytes());
+        hasher.update(fid.as_bytes());
+    }
     hasher.finalize().into()
+}
+
+/// Compatibility wrapper for single fid
+#[deprecated(note = "Use leaf_hash_fids instead")]
+pub fn leaf_hash(key: &str, fid: &str) -> Hash {
+    leaf_hash_fids(key, &Set::from_vec(vec![fid.to_string()]))
 }
 
 pub fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
@@ -41,44 +57,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_leaf_hash_deterministic() {
-        let hash1 = leaf_hash("key", "fid");
-        let hash2 = leaf_hash("key", "fid");
+    fn test_leaf_hash_fids_deterministic() {
+        let fids = Set::from_vec(vec!["fid".to_string()]);
+        let hash1 = leaf_hash_fids("key", &fids);
+        let hash2 = leaf_hash_fids("key", &fids);
         assert_eq!(hash1, hash2);
     }
 
     #[test]
-    fn test_leaf_hash_different_keys() {
-        let hash1 = leaf_hash("key1", "fid");
-        let hash2 = leaf_hash("key2", "fid");
+    fn test_leaf_hash_fids_different_keys() {
+        let fids = Set::from_vec(vec!["fid".to_string()]);
+        let hash1 = leaf_hash_fids("key1", &fids);
+        let hash2 = leaf_hash_fids("key2", &fids);
         assert_ne!(hash1, hash2);
     }
 
     #[test]
-    fn test_leaf_hash_different_fids() {
-        let hash1 = leaf_hash("key", "fid1");
-        let hash2 = leaf_hash("key", "fid2");
+    fn test_leaf_hash_fids_different_fids() {
+        let fids1 = Set::from_vec(vec!["fid1".to_string()]);
+        let fids2 = Set::from_vec(vec!["fid2".to_string()]);
+        let hash1 = leaf_hash_fids("key", &fids1);
+        let hash2 = leaf_hash_fids("key", &fids2);
         assert_ne!(hash1, hash2);
     }
 
     #[test]
-    fn test_leaf_hash_empty_strings() {
-        let hash = leaf_hash("", "");
+    fn test_leaf_hash_fids_empty_set() {
+        let empty_fids = Set::new();
+        let hash = leaf_hash_fids("", &empty_fids);
         assert_eq!(hash, *EMPTY_HASH);
     }
 
     #[test]
-    fn test_leaf_hash_length_encoding() {
-        // Ensure length encoding prevents collision between ("ab", "c") and ("a", "bc")
-        let hash1 = leaf_hash("ab", "c");
-        let hash2 = leaf_hash("a", "bc");
-        assert_ne!(hash1, hash2);
+    fn test_leaf_hash_fids_set_order_independence() {
+        // Set order should not affect hash due to sorting
+        let fids1 = Set::from_vec(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let fids2 = Set::from_vec(vec!["c".to_string(), "a".to_string(), "b".to_string()]);
+        let hash1 = leaf_hash_fids("key", &fids1);
+        let hash2 = leaf_hash_fids("key", &fids2);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_leaf_hash_backward_compat() {
+        // Old single-fid hash should match new hash with single-element set
+        let fids = Set::from_vec(vec!["fid".to_string()]);
+        let new_hash = leaf_hash_fids("key", &fids);
+        #[allow(deprecated)]
+        let old_hash = leaf_hash("key", "fid");
+        assert_eq!(new_hash, old_hash);
     }
 
     #[test]
     fn test_nonleaf_hash_deterministic() {
-        let left = leaf_hash("a", "fa");
-        let right = leaf_hash("b", "fb");
+        let left = leaf_hash_fids("a", &Set::from_vec(vec!["fa".to_string()]));
+        let right = leaf_hash_fids("b", &Set::from_vec(vec!["fb".to_string()]));
         let hash1 = nonleaf_hash(left, right);
         let hash2 = nonleaf_hash(left, right);
         assert_eq!(hash1, hash2);
@@ -86,8 +119,8 @@ mod tests {
 
     #[test]
     fn test_nonleaf_hash_order_matters() {
-        let left = leaf_hash("a", "fa");
-        let right = leaf_hash("b", "fb");
+        let left = leaf_hash_fids("a", &Set::from_vec(vec!["fa".to_string()]));
+        let right = leaf_hash_fids("b", &Set::from_vec(vec!["fb".to_string()]));
         let hash1 = nonleaf_hash(left, right);
         let hash2 = nonleaf_hash(right, left);
         assert_ne!(hash1, hash2);

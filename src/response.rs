@@ -1,5 +1,5 @@
 use crate::{Hash, proof::Proof};
-use accumulator_ads::{G1Affine, MembershipProof, digest_set_from_set};
+use accumulator_ads::{G1Affine, MembershipProof, digest_set_from_set, Set};
 
 /// Non-membership proof using cryptographic accumulator
 /// This proves that a key is NOT in the accumulated set using Bézout coefficients
@@ -77,8 +77,8 @@ fn verify_membership(acc: &G1Affine, witness: &G1Affine, key: &String) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct QueryResponse {
-    /// found fid if present
-    pub fid: Option<String>,
+    /// found fids if present
+    pub fids: Option<Set<String>>,
     /// membership proof for the found leaf (if any)
     pub proof: Option<Proof>,
     /// root hash of the subtree used to produce the proof
@@ -93,7 +93,7 @@ pub struct QueryResponse {
 
 impl QueryResponse {
     pub fn new(
-        fid: Option<String>,
+        fids: Option<Set<String>>,
         proof: Option<Proof>,
         root_hash: Option<Hash>,
         accumulator: Option<G1Affine>,
@@ -101,7 +101,7 @@ impl QueryResponse {
         nonmembership: Option<NonMembershipProof>,
     ) -> Self {
         Self {
-            fid,
+            fids,
             proof,
             root_hash,
             accumulator,
@@ -111,12 +111,12 @@ impl QueryResponse {
     }
 
     /// Verify both the Merkle path (leaf correctness) and the accumulator membership witness.
-    /// Returns true only if both checks pass. Requires the original `key` and `fid` used
+    /// Returns true only if both checks pass. Requires the original `key` and `fids` used
     /// to build the leaf hash.
-    pub fn verify_full(&self, key: &str, fid: &str) -> bool {
-        // verify Merkle path using provided key/fid (prevents leaf tampering)
+    pub fn verify_full(&self, key: &str, fids: &Set<String>) -> bool {
+        // verify Merkle path using provided key/fids (prevents leaf tampering)
         let merkle_ok = match (&self.root_hash, &self.proof) {
-            (Some(_root), Some(p)) => p.verify_with_kv(key, fid),
+            (Some(_root), Some(p)) => p.verify_with_kv(key, fids),
             _ => false,
         };
         if !merkle_ok {
@@ -135,8 +135,8 @@ impl QueryResponse {
 pub struct InsertResponse {
     /// key inserted
     pub key: String,
-    /// fid inserted
-    pub fid: String,
+    /// fids inserted
+    pub fids: Set<String>,
     /// snapshot of roots before insertion: vector of (root_hash, acc)
     pub pre_roots: Vec<(Hash, G1Affine)>,
     /// snapshot of root hash after insertion (the root that contains the inserted key)
@@ -154,7 +154,7 @@ pub struct InsertResponse {
 impl InsertResponse {
     pub fn new(
         key: String,
-        fid: String,
+        fids: Set<String>,
         pre_roots: Vec<(Hash, G1Affine)>,
         post_root_hash: Option<Hash>,
         post_accumulator: Option<G1Affine>,
@@ -164,7 +164,7 @@ impl InsertResponse {
     ) -> Self {
         Self {
             key,
-            fid,
+            fids,
             pre_roots,
             post_root_hash,
             post_accumulator,
@@ -179,10 +179,10 @@ impl InsertResponse {
 pub struct UpdateResponse {
     /// key updated
     pub key: String,
-    /// fid before update
-    pub old_fid: Option<String>,
-    /// fid after update
-    pub new_fid: String,
+    /// fids before update
+    pub old_fids: Option<Set<String>>,
+    /// fids after update
+    pub new_fids: Set<String>,
     /// membership proof for the leaf before update
     pub pre_proof: Option<Proof>,
     /// accumulator value before update (for the root containing the key)
@@ -204,8 +204,8 @@ pub struct UpdateResponse {
 impl UpdateResponse {
     pub fn new(
         key: String,
-        old_fid: Option<String>,
-        new_fid: String,
+        old_fids: Option<Set<String>>,
+        new_fids: Set<String>,
         pre_proof: Option<Proof>,
         pre_acc: Option<G1Affine>,
         pre_acc_witness: Option<G1Affine>,
@@ -217,8 +217,8 @@ impl UpdateResponse {
     ) -> Self {
         Self {
             key,
-            old_fid,
-            new_fid,
+            old_fids,
+            new_fids,
             pre_proof,
             pre_accumulator: pre_acc,
             pre_membership_witness: pre_acc_witness,
@@ -261,7 +261,7 @@ impl UpdateResponse {
 
         // verify accumulator membership: pre (old) and post (new)
         if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
-            && let Some(_old) = &self.old_fid
+            && let Some(_old) = &self.old_fids
             && !verify_membership(acc, w, &self.key)
         {
             return false;
@@ -283,8 +283,8 @@ impl UpdateResponse {
 pub struct DeleteResponse {
     /// key deleted
     pub key: String,
-    /// fid before deletion
-    pub old_fid: Option<String>,
+    /// fids before deletion
+    pub old_fids: Option<Set<String>>,
     /// membership proof for the leaf before deletion
     pub pre_proof: Option<Proof>,
     /// accumulator value before deletion (for the root containing the key)
@@ -304,7 +304,7 @@ pub struct DeleteResponse {
 impl DeleteResponse {
     pub fn new(
         key: String,
-        old_fid: Option<String>,
+        old_fids: Option<Set<String>>,
         pre_proof: Option<Proof>,
         pre_acc: Option<G1Affine>,
         pre_acc_witness: Option<G1Affine>,
@@ -315,7 +315,7 @@ impl DeleteResponse {
     ) -> Self {
         Self {
             key,
-            old_fid,
+            old_fids,
             pre_proof,
             pre_accumulator: pre_acc,
             pre_membership_witness: pre_acc_witness,
@@ -356,7 +356,7 @@ impl DeleteResponse {
 
         // verify accumulator membership for pre-state (old element)
         if let (Some(acc), Some(w)) = (&self.pre_accumulator, &self.pre_membership_witness)
-            && let Some(_old) = &self.old_fid
+            && let Some(_old) = &self.old_fids
             && !verify_membership(acc, w, &self.key)
         {
             return false;
@@ -372,7 +372,7 @@ impl DeleteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::leaf_hash;
+    use crate::crypto::leaf_hash_fids;
     use std::sync::Once;
 
     static INIT: Once = Once::new();
@@ -390,9 +390,10 @@ mod tests {
     #[test]
     fn test_query_response_construction() {
         init_test_params();
-        let qr = QueryResponse::new(Some("fid1".to_string()), None, None, None, None, None);
+        let fids = Set::from_vec(vec!["fid1".to_string()]);
+        let qr = QueryResponse::new(Some(fids.clone()), None, None, None, None, None);
 
-        assert_eq!(qr.fid, Some("fid1".to_string()));
+        assert_eq!(qr.fids, Some(fids));
         assert!(qr.proof.is_none());
         assert!(qr.nonmembership.is_none());
     }
@@ -400,17 +401,19 @@ mod tests {
     #[test]
     fn test_query_response_verify_full_fails_without_proof() {
         init_test_params();
-        let qr = QueryResponse::new(Some("fid1".to_string()), None, None, None, None, None);
+        let fids = Set::from_vec(vec!["fid1".to_string()]);
+        let qr = QueryResponse::new(Some(fids.clone()), None, None, None, None, None);
 
-        assert!(!qr.verify_full("key", "fid1"));
+        assert!(!qr.verify_full("key", &fids));
     }
 
     #[test]
     fn test_insert_response_construction() {
         init_test_params();
+        let fids = Set::from_vec(vec!["fid1".to_string()]);
         let resp = InsertResponse::new(
             "key1".to_string(),
-            "fid1".to_string(),
+            fids.clone(),
             vec![],
             None,
             None,
@@ -420,7 +423,7 @@ mod tests {
         );
 
         assert_eq!(resp.key, "key1");
-        assert_eq!(resp.fid, "fid1");
+        assert_eq!(resp.fids, fids);
         assert!(resp.pre_roots.is_empty());
     }
 
@@ -429,22 +432,26 @@ mod tests {
         init_test_params();
         use crate::crypto::empty_hash;
 
+        let old_fids = Set::from_vec(vec!["old".to_string()]);
+        let new_fids = Set::from_vec(vec!["new".to_string()]);
+        let other_fids = Set::from_vec(vec!["other".to_string()]);
+
         let pre_proof = Proof::new(
             empty_hash(),
-            leaf_hash("key", "old"),
+            leaf_hash_fids("key", &old_fids),
             vec![(empty_hash(), true)],
         );
 
         let post_proof = Proof::new(
             empty_hash(),
-            leaf_hash("key", "new"),
-            vec![(leaf_hash("other", "other"), true)], // Different sibling
+            leaf_hash_fids("key", &new_fids),
+            vec![(leaf_hash_fids("other", &other_fids), true)], // Different sibling
         );
 
         let resp = UpdateResponse::new(
             "key".to_string(),
-            Some("old".to_string()),
-            "new".to_string(),
+            Some(old_fids),
+            new_fids,
             Some(pre_proof),
             None,
             None,
@@ -465,10 +472,11 @@ mod tests {
         use crate::crypto::empty_hash;
 
         let post_proof = Proof::new(empty_hash(), empty_hash(), vec![]);
+        let old_fids = Set::from_vec(vec!["fid1".to_string()]);
 
         let resp = DeleteResponse::new(
             "key1".to_string(),
-            Some("fid1".to_string()),
+            Some(old_fids.clone()),
             None,
             None,
             None,
@@ -479,7 +487,7 @@ mod tests {
         );
 
         assert_eq!(resp.key, "key1");
-        assert_eq!(resp.old_fid, Some("fid1".to_string()));
+        assert_eq!(resp.old_fids, Some(old_fids));
     }
 
     #[test]
@@ -489,10 +497,11 @@ mod tests {
 
         // Valid single-leaf proof
         let post_proof = Proof::new(empty_hash(), empty_hash(), vec![]);
+        let old_fids = Set::from_vec(vec!["fid1".to_string()]);
 
         let resp = DeleteResponse::new(
             "key1".to_string(),
-            Some("fid1".to_string()),
+            Some(old_fids),
             None,
             None,
             None,

@@ -8,7 +8,7 @@ pub mod response;
 pub mod utils;
 
 // 对外暴露的公共 API
-pub use crypto::{Hash, empty_acc, empty_hash, leaf_hash, nonleaf_hash};
+pub use crypto::{Hash, empty_acc, empty_hash, leaf_hash, leaf_hash_fids, nonleaf_hash};
 pub use node::Node;
 pub use tree::AccumulatorTree;
 

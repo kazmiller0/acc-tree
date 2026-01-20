@@ -1,13 +1,13 @@
 use accumulator_ads::{DynamicAccumulator, G1Affine, Set, digest_set_from_set};
 use std::rc::Rc;
 
-use crate::crypto::{Hash, empty_acc, empty_hash, leaf_hash, nonleaf_hash};
+use crate::crypto::{Hash, empty_acc, empty_hash, leaf_hash_fids, nonleaf_hash};
 
 #[derive(Debug, Clone)]
 pub enum Node {
     Leaf {
         key: String,
-        fid: String,
+        fids: Set<String>,
         level: usize,
         deleted: bool,
     },
@@ -32,13 +32,13 @@ impl Node {
     pub fn hash(&self) -> Hash {
         match self {
             Node::Leaf {
-                key, fid, deleted, ..
+                key, fids, deleted, ..
             } => {
                 if *deleted {
                     // tombstoned leaf contributes an empty hash
                     empty_hash()
                 } else {
-                    leaf_hash(key, fid)
+                    leaf_hash_fids(key, fids)
                 }
             }
             Node::NonLeaf { hash, .. } => *hash,
@@ -83,11 +83,11 @@ impl Node {
     pub fn collect_leaves(
         &self,
         exclude_key: Option<&str>,
-    ) -> std::vec::IntoIter<(String, String)> {
-        let mut v: Vec<(String, String)> = Vec::new();
+    ) -> std::vec::IntoIter<(String, Set<String>)> {
+        let mut v: Vec<(String, Set<String>)> = Vec::new();
         match self {
             Node::Leaf {
-                key, fid, deleted, ..
+                key, fids, deleted, ..
             } => {
                 if *deleted {
                     return v.into_iter();
@@ -97,7 +97,7 @@ impl Node {
                 {
                     return v.into_iter();
                 }
-                v.push((key.clone(), fid.clone()));
+                v.push((key.clone(), fids.clone()));
             }
             Node::NonLeaf { left, right, .. } => {
                 v.extend(left.collect_leaves(exclude_key));
@@ -111,14 +111,14 @@ impl Node {
     // Query operations
     // ==========================================
 
-    /// Get value for target_key recursively
-    pub fn select(&self, target_key: &str) -> Option<String> {
+    /// Get document ID set for target_key recursively (inverted index semantics)
+    pub fn select(&self, target_key: &str) -> Option<Set<String>> {
         match self {
             Node::Leaf {
-                key, fid, deleted, ..
+                key, fids, deleted, ..
             } => {
                 if key == target_key && !*deleted {
-                    Some(fid.clone())
+                    Some(fids.clone())
                 } else {
                     None
                 }
@@ -139,28 +139,28 @@ impl Node {
         &self,
         target_key: &str,
         path: &mut Vec<(Hash, bool)>,
-    ) -> Option<String> {
+    ) -> Option<Set<String>> {
         match self {
             Node::Leaf {
-                key, fid, deleted, ..
+                key, fids, deleted, ..
             } => {
                 if key == target_key && !*deleted {
-                    Some(fid.clone())
+                    Some(fids.clone())
                 } else {
                     None
                 }
             }
             Node::NonLeaf { left, right, .. } => {
                 if left.has_key(target_key) {
-                    if let Some(fid) = left.select_with_proof(target_key, path) {
+                    if let Some(fids) = left.select_with_proof(target_key, path) {
                         path.push((right.hash(), false));
-                        return Some(fid);
+                        return Some(fids);
                     }
                     None
                 } else if right.has_key(target_key) {
-                    if let Some(fid) = right.select_with_proof(target_key, path) {
+                    if let Some(fids) = right.select_with_proof(target_key, path) {
                         path.push((left.hash(), true));
-                        return Some(fid);
+                        return Some(fids);
                     }
                     None
                 } else {
@@ -175,23 +175,23 @@ impl Node {
         &self,
         target_key: &str,
         path: &mut Vec<(Hash, bool)>,
-    ) -> Option<String> {
+    ) -> Option<Set<String>> {
         match self {
-            Node::Leaf { key, fid, .. } => {
+            Node::Leaf { key, fids, .. } => {
                 if key == target_key {
-                    Some(fid.clone())
+                    Some(fids.clone())
                 } else {
                     None
                 }
             }
             Node::NonLeaf { left, right, .. } => {
-                if let Some(fid) = left.select_proof_including_deleted(target_key, path) {
+                if let Some(fids) = left.select_proof_including_deleted(target_key, path) {
                     path.push((right.hash(), false));
-                    return Some(fid);
+                    return Some(fids);
                 }
-                if let Some(fid) = right.select_proof_including_deleted(target_key, path) {
+                if let Some(fids) = right.select_proof_including_deleted(target_key, path) {
                     path.push((left.hash(), true));
-                    return Some(fid);
+                    return Some(fids);
                 }
                 None
             }
@@ -202,14 +202,14 @@ impl Node {
     // Mutation operations
     // ==========================================
 
-    /// Update fid for target_key recursively. Returns whether hash changed.
-    pub fn update(&mut self, target_key: &str, new_fid: &str) -> bool {
+    /// Replace the entire fids set for target_key. Returns whether hash changed.
+    pub fn set_fids(&mut self, target_key: &str, new_fids: Set<String>) -> bool {
         match self {
             Node::Leaf {
-                fid, key, deleted, ..
+                fids, key, deleted, ..
             } => {
                 if key == target_key && !*deleted {
-                    *fid = new_fid.to_string();
+                    *fids = new_fids;
                     true
                 } else {
                     false
@@ -219,9 +219,73 @@ impl Node {
                 hash, left, right, ..
             } => {
                 let changed = if left.has_key(target_key) {
-                    left.update(target_key, new_fid)
+                    left.set_fids(target_key, new_fids)
                 } else {
-                    right.update(target_key, new_fid)
+                    right.set_fids(target_key, new_fids)
+                };
+                if changed {
+                    *hash = nonleaf_hash(left.hash(), right.hash());
+                }
+                changed
+            }
+        }
+    }
+
+    /// Add a document ID to the fids set for target_key. Returns whether hash changed.
+    pub fn add_fid(&mut self, target_key: &str, fid: String) -> bool {
+        match self {
+            Node::Leaf {
+                fids, key, deleted, ..
+            } => {
+                if key == target_key && !*deleted {
+                    let before_len = fids.len();
+                    *fids = fids.union(&Set::from_vec(vec![fid]));
+                    fids.len() != before_len
+                } else {
+                    false
+                }
+            }
+            Node::NonLeaf {
+                hash, left, right, ..
+            } => {
+                let changed = if left.has_key(target_key) {
+                    left.add_fid(target_key, fid)
+                } else {
+                    right.add_fid(target_key, fid)
+                };
+                if changed {
+                    *hash = nonleaf_hash(left.hash(), right.hash());
+                }
+                changed
+            }
+        }
+    }
+
+    /// Remove a document ID from the fids set for target_key. Returns whether hash changed.
+    /// If fids becomes empty, the leaf is tombstoned (deleted=true).
+    pub fn remove_fid(&mut self, target_key: &str, fid: &str) -> bool {
+        match self {
+            Node::Leaf {
+                fids, key, deleted, ..
+            } => {
+                if key == target_key && !*deleted {
+                    let before_len = fids.len();
+                    *fids = fids.difference(&Set::from_vec(vec![fid.to_string()]));
+                    if fids.is_empty() {
+                        *deleted = true;
+                    }
+                    fids.len() != before_len || *deleted
+                } else {
+                    false
+                }
+            }
+            Node::NonLeaf {
+                hash, left, right, ..
+            } => {
+                let changed = if left.has_key(target_key) {
+                    left.remove_fid(target_key, fid)
+                } else {
+                    right.remove_fid(target_key, fid)
                 };
                 if changed {
                     *hash = nonleaf_hash(left.hash(), right.hash());
@@ -236,21 +300,21 @@ impl Node {
         match *self {
             Node::Leaf {
                 key,
-                fid,
+                fids,
                 level,
                 deleted,
             } => {
                 if key == target_key && !deleted {
                     Box::new(Node::Leaf {
                         key,
-                        fid,
+                        fids,
                         level,
                         deleted: true,
                     })
                 } else {
                     Box::new(Node::Leaf {
                         key,
-                        fid,
+                        fids,
                         level,
                         deleted,
                     })
@@ -267,25 +331,26 @@ impl Node {
     }
 
     /// Revive a tombstoned leaf with target_key. Returns new node.
+    /// Replaces fids with a new set containing the single fid.
     pub fn revive(self: Box<Self>, target_key: &str, new_fid: &str) -> Box<Node> {
         match *self {
             Node::Leaf {
                 key,
-                fid,
+                fids,
                 level,
                 deleted,
             } => {
                 if key == target_key && deleted {
                     Box::new(Node::Leaf {
                         key,
-                        fid: new_fid.to_string(),
+                        fids: Set::from_vec(vec![new_fid.to_string()]),
                         level,
                         deleted: false,
                     })
                 } else {
                     Box::new(Node::Leaf {
                         key,
-                        fid,
+                        fids,
                         level,
                         deleted,
                     })
@@ -353,7 +418,7 @@ mod tests {
         init_test_params();
         let leaf = Node::Leaf {
             key: "test".into(),
-            fid: "fid1".into(),
+            fids: Set::from_vec(vec!["fid1".into()]),
             level: 0,
             deleted: false,
         };
@@ -370,7 +435,7 @@ mod tests {
         init_test_params();
         let deleted_leaf = Node::Leaf {
             key: "deleted".into(),
-            fid: "fid1".into(),
+            fids: Set::from_vec(vec!["fid1".into()]),
             level: 0,
             deleted: true,
         };
@@ -387,13 +452,13 @@ mod tests {
         init_test_params();
         let leaf1 = Box::new(Node::Leaf {
             key: "a".into(),
-            fid: "fa".into(),
+            fids: Set::from_vec(vec!["fa".into()]),
             level: 0,
             deleted: false,
         });
         let leaf2 = Box::new(Node::Leaf {
             key: "b".into(),
-            fid: "fb".into(),
+            fids: Set::from_vec(vec!["fb".into()]),
             level: 0,
             deleted: false,
         });
@@ -402,12 +467,21 @@ mod tests {
 
         let leaves: Vec<_> = merged.collect_leaves(None).collect();
         assert_eq!(leaves.len(), 2);
-        assert!(leaves.contains(&("a".into(), "fa".into())));
-        assert!(leaves.contains(&("b".into(), "fb".into())));
+        assert!(
+            leaves
+                .iter()
+                .any(|(k, fids)| k == "a" && fids.contains(&"fa".to_string()))
+        );
+        assert!(
+            leaves
+                .iter()
+                .any(|(k, fids)| k == "b" && fids.contains(&"fb".to_string()))
+        );
 
         // Test exclude functionality
         let excluded: Vec<_> = merged.collect_leaves(Some("a")).collect();
         assert_eq!(excluded.len(), 1);
-        assert_eq!(excluded[0], ("b".into(), "fb".into()));
+        assert_eq!(excluded[0].0, "b");
+        assert!(excluded[0].1.contains(&"fb".to_string()));
     }
 }
