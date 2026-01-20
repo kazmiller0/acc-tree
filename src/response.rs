@@ -565,11 +565,13 @@ mod tests {
 
         let resp = UpdateResponse::new(
             "key".to_string(),
+            "old".to_string(),
+            "new".to_string(),
             Some(old_fids),
             new_fids,
             Some(pre_proof),
-            None,
-            None,
+            Some(crate::crypto::empty_acc()), // pre_acc
+            Some(crate::crypto::empty_acc()), // pre_acc_witness
             post_proof,
             crate::crypto::empty_acc(),
             crate::crypto::empty_acc(),
@@ -591,7 +593,9 @@ mod tests {
 
         let resp = DeleteResponse::new(
             "key1".to_string(),
+            "fid1".to_string(),
             Some(old_fids.clone()),
+            Set::new(),
             None,
             None,
             None,
@@ -616,7 +620,9 @@ mod tests {
 
         let resp = DeleteResponse::new(
             "key1".to_string(),
+            "fid1".to_string(),
             Some(old_fids),
+            Set::new(),
             None,
             None,
             None,

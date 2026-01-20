@@ -154,7 +154,8 @@ mod tests {
 
     #[test]
     fn test_hash_output_length() {
-        let hash = leaf_hash("test", "test");
+        let fids = Set::from_vec(vec!["test".to_string()]);
+        let hash = leaf_hash_fids("test", &fids);
         assert_eq!(hash.len(), 32);
     }
 }
