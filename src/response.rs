@@ -365,3 +365,181 @@ impl DeleteResponse {
         true
     }
 }
+
+/// Unit tests for response structures
+///
+/// These tests verify the basic construction and validation logic of response types.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::leaf_hash;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn init_test_params() {
+        INIT.call_once(|| {
+            use accumulator_ads::acc::setup::{PublicParameters, init_public_parameters_direct};
+            use ark_bls12_381::Fr;
+            let secret_s = Fr::from(123456789u128);
+            let params = PublicParameters::generate_for_testing(secret_s, 50);
+            init_public_parameters_direct(params).expect("Failed to initialize");
+        });
+    }
+
+    #[test]
+    fn test_query_response_construction() {
+        init_test_params();
+        let qr = QueryResponse::new(Some("fid1".to_string()), None, None, None, None, None);
+
+        assert_eq!(qr.fid, Some("fid1".to_string()));
+        assert!(qr.proof.is_none());
+        assert!(qr.nonmembership.is_none());
+    }
+
+    #[test]
+    fn test_query_response_verify_full_fails_without_proof() {
+        init_test_params();
+        let qr = QueryResponse::new(Some("fid1".to_string()), None, None, None, None, None);
+
+        assert!(!qr.verify_full("key", "fid1"));
+    }
+
+    #[test]
+    fn test_insert_response_construction() {
+        init_test_params();
+        let resp = InsertResponse::new(
+            "key1".to_string(),
+            "fid1".to_string(),
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(resp.key, "key1");
+        assert_eq!(resp.fid, "fid1");
+        assert!(resp.pre_roots.is_empty());
+    }
+
+    #[test]
+    fn test_update_response_verify_fails_with_mismatched_paths() {
+        init_test_params();
+        use crate::crypto::empty_hash;
+
+        let pre_proof = Proof::new(
+            empty_hash(),
+            leaf_hash("key", "old"),
+            vec![(empty_hash(), true)],
+        );
+
+        let post_proof = Proof::new(
+            empty_hash(),
+            leaf_hash("key", "new"),
+            vec![(leaf_hash("other", "other"), true)], // Different sibling
+        );
+
+        let resp = UpdateResponse::new(
+            "key".to_string(),
+            Some("old".to_string()),
+            "new".to_string(),
+            Some(pre_proof),
+            None,
+            None,
+            post_proof,
+            crate::crypto::empty_acc(),
+            crate::crypto::empty_acc(),
+            None,
+            empty_hash(),
+        );
+
+        // Should fail because sibling hashes don't match
+        assert!(!resp.verify_update());
+    }
+
+    #[test]
+    fn test_delete_response_construction() {
+        init_test_params();
+        use crate::crypto::empty_hash;
+
+        let post_proof = Proof::new(empty_hash(), empty_hash(), vec![]);
+
+        let resp = DeleteResponse::new(
+            "key1".to_string(),
+            Some("fid1".to_string()),
+            None,
+            None,
+            None,
+            post_proof,
+            crate::crypto::empty_acc(),
+            None,
+            empty_hash(),
+        );
+
+        assert_eq!(resp.key, "key1");
+        assert_eq!(resp.old_fid, Some("fid1".to_string()));
+    }
+
+    #[test]
+    fn test_delete_response_verify_post_proof() {
+        init_test_params();
+        use crate::crypto::empty_hash;
+
+        // Valid single-leaf proof
+        let post_proof = Proof::new(empty_hash(), empty_hash(), vec![]);
+
+        let resp = DeleteResponse::new(
+            "key1".to_string(),
+            Some("fid1".to_string()),
+            None,
+            None,
+            None,
+            post_proof,
+            crate::crypto::empty_acc(),
+            None,
+            empty_hash(),
+        );
+
+        // Should pass basic verification
+        assert!(resp.verify_delete());
+    }
+
+    #[test]
+    fn test_nonmembership_proof_verify_key_mismatch() {
+        init_test_params();
+        use accumulator_ads::Set;
+
+        let all_keys = Set::from_vec(vec!["a".to_string(), "b".to_string()]);
+        let acc = {
+            use accumulator_ads::DynamicAccumulator;
+            let digest_set = digest_set_from_set(&all_keys);
+            DynamicAccumulator::calculate_commitment(&digest_set)
+        };
+
+        if let Some(nm_proof) = NonMembershipProof::new("z".to_string(), acc, &all_keys) {
+            // Should fail if we check with wrong key
+            assert!(!nm_proof.verify("wrong_key"));
+            // Should pass with correct key
+            assert!(nm_proof.verify("z"));
+        }
+    }
+
+    #[test]
+    fn test_nonmembership_proof_fails_for_existing_key() {
+        init_test_params();
+        use accumulator_ads::Set;
+
+        let all_keys = Set::from_vec(vec!["a".to_string(), "b".to_string()]);
+        let acc = {
+            use accumulator_ads::DynamicAccumulator;
+            let digest_set = digest_set_from_set(&all_keys);
+            DynamicAccumulator::calculate_commitment(&digest_set)
+        };
+
+        // Should return None when trying to prove non-membership for existing key
+        let result = NonMembershipProof::new("a".to_string(), acc, &all_keys);
+        assert!(result.is_none());
+    }
+}

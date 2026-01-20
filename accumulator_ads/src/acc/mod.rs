@@ -15,6 +15,10 @@ pub use proofs::*;
 pub use setup::{E_G_G, PublicParameters, init_public_parameters, init_public_parameters_direct, 
                 get_public_parameters, get_g1s, get_g2s, get_g1s_vec, get_g2s_vec};
 
+/// Unit tests for basic accumulator operations
+/// 
+/// These tests verify the fundamental cryptographic operations (add, delete, membership)
+/// at the module level. They stay in this file because they test internal module behavior.
 #[cfg(test)]
 mod tests {
     use super::*;

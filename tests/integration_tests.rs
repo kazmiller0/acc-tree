@@ -1,4 +1,9 @@
-use super::*;
+//! Integration tests for AccumulatorTree
+//!
+//! These tests verify end-to-end functionality and multi-step business workflows.
+//! They test the complete system behavior rather than individual components.
+
+use accumulator_tree::*;
 use accumulator_ads::{digest_set_from_set, DynamicAccumulator, Set};
 use std::sync::Once;
 
@@ -64,60 +69,7 @@ fn verify_membership(
     lhs == rhs
 }
 
-#[test]
-fn test_node_hash_and_collect() {
-    init_test_params();
-    let l = Box::new(Node::Leaf {
-        key: "A".into(),
-        fid: "fa".into(),
-        level: 0,
-        deleted: false,
-    });
-    let r = Box::new(Node::Leaf {
-        key: "B".into(),
-        fid: "fb".into(),
-        level: 0,
-        deleted: false,
-    });
-
-    assert_eq!(l.level(), 0);
-    assert_eq!(r.level(), 0);
-    assert!(l.has_key("A"));
-    assert!(!l.has_key("B"));
-
-    let merged = AccumulatorTree::test_merge_nodes(l.clone(), r.clone());
-    // merged level 应为子节点 level + 1
-    assert_eq!(merged.level(), 1);
-
-    // nonleaf hash = nonleaf_hash(left.hash(), right.hash())
-    if let Node::NonLeaf {
-        hash,
-        left,
-        right,
-        keys,
-        ..
-    } = &*merged
-    {
-        assert_eq!(
-            *hash,
-            nonleaf_hash(left.as_ref().hash(), right.as_ref().hash())
-        );
-        let mut collected: Vec<_> = left
-            .collect_leaves(None)
-            .chain(right.collect_leaves(None))
-            .map(|(k, _)| k)
-            .collect();
-        collected.sort();
-        let mut stored: Vec<_> = keys.as_ref().iter().cloned().collect();
-        stored.sort();
-        assert_eq!(collected, stored);
-    } else {
-        panic!("merged must be NonLeaf");
-    }
-}
-
-// ========== additional comprehensive tests ==========
-
+// Helper functions for traversing tree structure
 fn find_leaf_by_key<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
     match node {
         Node::Leaf { key: k, .. } if k == key => Some(node),
@@ -146,6 +98,43 @@ fn traverse_nodes<F: FnMut(&Node)>(node: &Node, f: &mut F) {
         traverse_nodes(left, f);
         traverse_nodes(right, f);
     }
+}
+
+// ==========================================
+// Integration Tests
+// ==========================================
+
+#[test]
+fn test_tree_lifecycle() {
+    init_test_params();
+    let mut tree = AccumulatorTree::new();
+    for i in 0..8 {
+        tree.insert(format!("K{}", i), format!("F{}", i));
+    }
+
+    // 基本查询
+    assert_eq!(tree.select("K3"), Some("F3".to_string()));
+
+    // 更新并验证
+    tree.update("K3", "F3_upd".to_string());
+    assert_eq!(tree.select("K3"), Some("F3_upd".to_string()));
+
+    // 删除并验证
+    tree.delete("K2");
+    assert_eq!(tree.select("K2"), None);
+
+    // 收集当前键并校验数量（应为 7）
+    let mut keys: Vec<String> = Vec::new();
+    for root in &tree.roots {
+        for (k, _) in root.collect_leaves(None) {
+            keys.push(k);
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), 7);
+    assert!(keys.contains(&"K3".to_string()));
+    assert!(!keys.contains(&"K2".to_string()));
 }
 
 #[test]
@@ -346,13 +335,13 @@ fn test_tombstone_propagation_and_normalize_behavior() {
         deleted: false,
     });
 
-    let left = AccumulatorTree::test_merge_nodes(a, b); // level 1
-    let right = AccumulatorTree::test_merge_nodes(c, d); // level 1
-    let root = AccumulatorTree::test_merge_nodes(left.clone(), right.clone()); // level 2
+    let left = Node::merge(a, b, None); // level 1
+    let right = Node::merge(c, d, None); // level 1
+    let root = Node::merge(left.clone(), right.clone(), None); // level 2
 
     // delete both leaves in left subtree
-    let root_after = AccumulatorTree::test_delete_recursive(root, "a");
-    let root_after = AccumulatorTree::test_delete_recursive(root_after, "b");
+    let root_after = root.delete("a");
+    let root_after = root_after.delete("b");
 
     // find left subtree (root_after.left)
     if let Node::NonLeaf { left, right: _, .. } = &*root_after {
@@ -417,16 +406,16 @@ fn test_revive_updates_nonleaf_for_deep_tree() {
         level: 0,
         deleted: false,
     });
-    let left = AccumulatorTree::test_merge_nodes(a, b);
-    let right = AccumulatorTree::test_merge_nodes(c, d);
-    let mut root = AccumulatorTree::test_merge_nodes(left, right);
+    let left = Node::merge(a, b, None);
+    let right = Node::merge(c, d, None);
+    let mut root = Node::merge(left, right, None);
 
     // delete a and b (left subtree becomes empty keys)
-    root = AccumulatorTree::test_delete_recursive(root, "a");
-    root = AccumulatorTree::test_delete_recursive(root, "b");
+    root = root.delete("a");
+    root = root.delete("b");
 
     // revive a by inserting into the outer tree via revive_recursive semantics
-    let revived = AccumulatorTree::test_revive_recursive(root, "a", "fa_new");
+    let revived = root.revive("a", "fa_new");
     // verify that after revive, acc/hash for the parent nonleaf reflect the restored key
     if let Node::NonLeaf {
         left,
@@ -476,39 +465,6 @@ fn test_special_key_and_fid_boundaries() {
         };
         traverse_nodes(r, &mut check);
     }
-}
-
-#[test]
-fn test_tree_lifecycle() {
-    init_test_params();
-    let mut tree = AccumulatorTree::new();
-    for i in 0..8 {
-        tree.insert(format!("K{}", i), format!("F{}", i));
-    }
-
-    // 基本查询
-    assert_eq!(tree.select("K3"), Some("F3".to_string()));
-
-    // 更新并验证
-    tree.update("K3", "F3_upd".to_string());
-    assert_eq!(tree.select("K3"), Some("F3_upd".to_string()));
-
-    // 删除并验证
-    tree.delete("K2");
-    assert_eq!(tree.select("K2"), None);
-
-    // 收集当前键并校验数量（应为 7）
-    let mut keys: Vec<String> = Vec::new();
-    for root in &tree.roots {
-        for (k, _) in root.collect_leaves(None) {
-            keys.push(k);
-        }
-    }
-    keys.sort();
-    keys.dedup();
-    assert_eq!(keys.len(), 7);
-    assert!(keys.contains(&"K3".to_string()));
-    assert!(!keys.contains(&"K2".to_string()));
 }
 
 #[test]

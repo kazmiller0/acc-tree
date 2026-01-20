@@ -380,6 +380,10 @@ impl DisjointnessProof {
     }
 }
 
+/// Unit tests for UpdateProof behavior
+/// 
+/// These tests verify specific proof operations and their mathematical properties.
+/// They remain here because they test the internal correctness of proof generation.
 #[cfg(test)]
 mod tests {
     use super::*;

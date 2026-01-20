@@ -15,6 +15,3 @@ pub use tree::AccumulatorTree;
 pub use proof::Proof;
 pub use response::{QueryResponse, InsertResponse, UpdateResponse, DeleteResponse, NonMembershipProof};
 pub use utils::{print_tree, render_keys};
-
-#[cfg(test)]
-mod tests;

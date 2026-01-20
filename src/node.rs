@@ -1,4 +1,4 @@
-use accumulator_ads::{digest_set_from_set, DynamicAccumulator, G1Affine, Set};
+use accumulator_ads::{DynamicAccumulator, G1Affine, Set, digest_set_from_set};
 use std::rc::Rc;
 
 use crate::crypto::{Hash, empty_acc, empty_hash, leaf_hash, nonleaf_hash};
@@ -322,5 +322,92 @@ impl Node {
             left,
             right,
         })
+    }
+}
+
+/// Unit tests for Node internal behavior
+///
+/// These tests verify the basic properties and methods of Node.
+/// They focus on individual node operations without complex tree structures.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn init_test_params() {
+        INIT.call_once(|| {
+            use accumulator_ads::acc::setup::{PublicParameters, init_public_parameters_direct};
+            use ark_bls12_381::Fr;
+
+            let secret_s = Fr::from(123456789u128);
+            let params = PublicParameters::generate_for_testing(secret_s, 10);
+            init_public_parameters_direct(params).expect("Failed to initialize test parameters");
+        });
+    }
+
+    /// Unit test: Verify basic node properties and methods
+    #[test]
+    fn test_node_basic_properties() {
+        init_test_params();
+        let leaf = Node::Leaf {
+            key: "test".into(),
+            fid: "fid1".into(),
+            level: 0,
+            deleted: false,
+        };
+
+        assert_eq!(leaf.level(), 0);
+        assert!(leaf.has_key("test"));
+        assert!(!leaf.has_key("other"));
+        assert_eq!(leaf.keys().len(), 1);
+    }
+
+    /// Unit test: Verify tombstone behavior
+    #[test]
+    fn test_node_deleted_behavior() {
+        init_test_params();
+        let deleted_leaf = Node::Leaf {
+            key: "deleted".into(),
+            fid: "fid1".into(),
+            level: 0,
+            deleted: true,
+        };
+
+        assert!(!deleted_leaf.has_key("deleted"));
+        assert_eq!(deleted_leaf.keys().len(), 0);
+        assert_eq!(deleted_leaf.hash(), empty_hash());
+        assert_eq!(deleted_leaf.acc(), empty_acc());
+    }
+
+    /// Unit test: Verify collect_leaves functionality
+    #[test]
+    fn test_collect_leaves() {
+        init_test_params();
+        let leaf1 = Box::new(Node::Leaf {
+            key: "a".into(),
+            fid: "fa".into(),
+            level: 0,
+            deleted: false,
+        });
+        let leaf2 = Box::new(Node::Leaf {
+            key: "b".into(),
+            fid: "fb".into(),
+            level: 0,
+            deleted: false,
+        });
+
+        let merged = Node::merge(leaf1, leaf2, None);
+
+        let leaves: Vec<_> = merged.collect_leaves(None).collect();
+        assert_eq!(leaves.len(), 2);
+        assert!(leaves.contains(&("a".into(), "fa".into())));
+        assert!(leaves.contains(&("b".into(), "fb".into())));
+
+        // Test exclude functionality
+        let excluded: Vec<_> = merged.collect_leaves(Some("a")).collect();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0], ("b".into(), "fb".into()));
     }
 }
