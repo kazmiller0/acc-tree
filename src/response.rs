@@ -1,5 +1,5 @@
 use crate::{Hash, proof::Proof};
-use accumulator_ads::{G1Affine, digest_set_from_set, MembershipProof};
+use accumulator_ads::{G1Affine, MembershipProof, digest_set_from_set};
 
 /// Non-membership proof using cryptographic accumulator
 /// This proves that a key is NOT in the accumulated set using Bézout coefficients
@@ -125,9 +125,7 @@ impl QueryResponse {
 
         // verify accumulator membership: acc + element_commitment == acc (via witness)
         match (&self.accumulator, &self.membership_witness) {
-            (Some(acc), Some(witness)) => {
-                verify_membership(acc, witness, &key.to_string())
-            }
+            (Some(acc), Some(witness)) => verify_membership(acc, witness, &key.to_string()),
             _ => false,
         }
     }

@@ -1,7 +1,5 @@
-use crate::crypto::{Hash, empty_hash, leaf_hash, nonleaf_hash};
+use crate::crypto::{Hash, empty_hash, leaf_hash};
 use crate::node::Node;
-use accumulator_ads::{DynamicAccumulator, digest_set_from_set};
-use std::rc::Rc;
 
 pub struct AccumulatorTree {
     pub roots: Vec<Box<Node>>,
@@ -19,223 +17,7 @@ impl AccumulatorTree {
     }
 
     // ==========================================
-    // Internal recursive operations on nodes
-    // ==========================================
-
-    /// Get value for target_key recursively
-    fn node_select_recursive(node: &Node, target_key: &str) -> Option<String> {
-        match node {
-            Node::Leaf {
-                key, fid, deleted, ..
-            } => {
-                if key == target_key && !*deleted {
-                    Some(fid.clone())
-                } else {
-                    None
-                }
-            }
-            Node::NonLeaf { left, right, .. } => {
-                if left.has_key(target_key) {
-                    Self::node_select_recursive(left, target_key)
-                } else {
-                    Self::node_select_recursive(right, target_key)
-                }
-            }
-        }
-    }
-
-    /// Build a path-proof for `target_key` within this node.
-    /// `path` is populated with sibling hashes on unwind; each entry is (sibling_hash, sibling_is_left).
-    fn node_select_proof_recursive(
-        node: &Node,
-        target_key: &str,
-        path: &mut Vec<(Hash, bool)>,
-    ) -> Option<String> {
-        match node {
-            Node::Leaf {
-                key, fid, deleted, ..
-            } => {
-                if key == target_key && !*deleted {
-                    Some(fid.clone())
-                } else {
-                    None
-                }
-            }
-            Node::NonLeaf { left, right, .. } => {
-                if left.has_key(target_key) {
-                    if let Some(fid) = Self::node_select_proof_recursive(left, target_key, path) {
-                        path.push((right.hash(), false));
-                        return Some(fid);
-                    }
-                    None
-                } else if right.has_key(target_key) {
-                    if let Some(fid) = Self::node_select_proof_recursive(right, target_key, path) {
-                        path.push((left.hash(), true));
-                        return Some(fid);
-                    }
-                    None
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    /// Build a proof for `target_key` including leaves that may be tombstoned.
-    fn node_select_proof_including_deleted(
-        node: &Node,
-        target_key: &str,
-        path: &mut Vec<(Hash, bool)>,
-    ) -> Option<String> {
-        match node {
-            Node::Leaf { key, fid, .. } => {
-                if key == target_key {
-                    Some(fid.clone())
-                } else {
-                    None
-                }
-            }
-            Node::NonLeaf { left, right, .. } => {
-                if let Some(fid) = Self::node_select_proof_including_deleted(left, target_key, path)
-                {
-                    path.push((right.hash(), false));
-                    return Some(fid);
-                }
-                if let Some(fid) =
-                    Self::node_select_proof_including_deleted(right, target_key, path)
-                {
-                    path.push((left.hash(), true));
-                    return Some(fid);
-                }
-                None
-            }
-        }
-    }
-
-    /// Update fid for target_key recursively. Returns whether hash changed.
-    fn node_update_recursive(node: &mut Node, target_key: &str, new_fid: &str) -> bool {
-        match node {
-            Node::Leaf {
-                fid, key, deleted, ..
-            } => {
-                if key == target_key && !*deleted {
-                    *fid = new_fid.to_string();
-                    true
-                } else {
-                    false
-                }
-            }
-            Node::NonLeaf {
-                hash, left, right, ..
-            } => {
-                let changed = if left.has_key(target_key) {
-                    Self::node_update_recursive(left, target_key, new_fid)
-                } else {
-                    Self::node_update_recursive(right, target_key, new_fid)
-                };
-                if changed {
-                    *hash = nonleaf_hash(left.hash(), right.hash());
-                }
-                changed
-            }
-        }
-    }
-
-    /// Mark leaf with target_key as deleted (tombstone). Returns new node.
-    fn node_delete_recursive(node: Box<Node>, target_key: &str) -> Box<Node> {
-        match *node {
-            Node::Leaf {
-                key,
-                fid,
-                level,
-                deleted,
-            } => {
-                if key == target_key && !deleted {
-                    Box::new(Node::Leaf {
-                        key,
-                        fid,
-                        level,
-                        deleted: true,
-                    })
-                } else {
-                    Box::new(Node::Leaf {
-                        key,
-                        fid,
-                        level,
-                        deleted,
-                    })
-                }
-            }
-            Node::NonLeaf {
-                left, right, level, ..
-            } => {
-                let l = Self::node_delete_recursive(left, target_key);
-                let r = Self::node_delete_recursive(right, target_key);
-                Self::node_merge(l, r, Some(level))
-            }
-        }
-    }
-
-    /// Revive a tombstoned leaf with target_key. Returns new node.
-    fn node_revive_recursive(node: Box<Node>, target_key: &str, new_fid: &str) -> Box<Node> {
-        match *node {
-            Node::Leaf {
-                key,
-                fid,
-                level,
-                deleted,
-            } => {
-                if key == target_key && deleted {
-                    Box::new(Node::Leaf {
-                        key,
-                        fid: new_fid.to_string(),
-                        level,
-                        deleted: false,
-                    })
-                } else {
-                    Box::new(Node::Leaf {
-                        key,
-                        fid,
-                        level,
-                        deleted,
-                    })
-                }
-            }
-            Node::NonLeaf {
-                left, right, level, ..
-            } => {
-                let l = Self::node_revive_recursive(left, target_key, new_fid);
-                let r = Self::node_revive_recursive(right, target_key, new_fid);
-                Self::node_merge(l, r, Some(level))
-            }
-        }
-    }
-
-    /// Merge two nodes into a new NonLeaf node
-    /// If level is provided, use it; otherwise compute as right.level() + 1
-    fn node_merge(left: Box<Node>, right: Box<Node>, level: Option<usize>) -> Box<Node> {
-        let new_keys = Rc::new(left.keys().union(&right.keys()));
-
-        let left_acc = left.acc();
-
-        // Optimize: Only convert the difference (right - left) to Vec<Fr>
-        // Using HashSet.difference() is O(n), much faster than converting both full sets
-        let diff_elements = right.keys().difference(&left.keys());
-        let diff_fr = digest_set_from_set(&diff_elements);
-        let new_acc = DynamicAccumulator::incremental_add_elements(left_acc, &diff_fr);
-
-        Box::new(Node::NonLeaf {
-            hash: nonleaf_hash(left.hash(), right.hash()),
-            keys: new_keys,
-            acc: new_acc,
-            level: level.unwrap_or_else(|| right.level() + 1),
-            left,
-            right,
-        })
-    }
-
-    // ==========================================
-    // Public API
+    // Public API - Forest Management
     // ==========================================
 
     fn normalize(&mut self) {
@@ -248,7 +30,7 @@ impl AccumulatorTree {
             while let Some(top) = stack.last() {
                 if top.level() == cur.level() {
                     let left = stack.pop().unwrap();
-                    cur = Self::node_merge(left, cur, None);
+                    cur = Node::merge(left, cur, None);
                 } else {
                     break;
                 }
@@ -263,7 +45,7 @@ impl AccumulatorTree {
         // If there's an existing leaf for `key`, try to revive it (use `has_key`).
         if let Some(idx) = self.roots.iter().position(|r| r.has_key(&key)) {
             let root = self.roots.remove(idx);
-            let revived = Self::node_revive_recursive(root, &key, &fid);
+            let revived = root.revive(&key, &fid);
             self.roots.push(revived);
             self.normalize();
             return;
@@ -353,7 +135,7 @@ impl AccumulatorTree {
 
     pub fn select(&self, key: &str) -> Option<String> {
         for r in &self.roots {
-            if let Some(v) = Self::node_select_recursive(r, key) {
+            if let Some(v) = r.select(key) {
                 return Some(v);
             }
         }
@@ -365,7 +147,7 @@ impl AccumulatorTree {
     pub fn select_with_proof(&self, key: &str) -> crate::response::QueryResponse {
         for r in &self.roots {
             let mut path: Vec<(Hash, bool)> = Vec::new();
-            if let Some(fid) = Self::node_select_proof_recursive(r, key, &mut path) {
+            if let Some(fid) = r.select_with_proof(key, &mut path) {
                 let leaf_h = leaf_hash(key, &fid);
                 let root_h = r.hash();
                 let proof = crate::proof::Proof::new(root_h, leaf_h, path);
@@ -395,7 +177,7 @@ impl AccumulatorTree {
 
     pub fn update(&mut self, key: &str, new_fid: String) {
         if let Some(root) = self.roots.iter_mut().find(|r| r.has_key(key)) {
-            Self::node_update_recursive(root, key, &new_fid);
+            root.update(key, &new_fid);
         }
     }
 
@@ -452,7 +234,7 @@ impl AccumulatorTree {
     pub fn delete(&mut self, key: &str) {
         if let Some(idx) = self.roots.iter().position(|r| r.has_key(key)) {
             let root = self.roots.remove(idx);
-            let new_root = Self::node_delete_recursive(root, key);
+            let new_root = root.delete(key);
             self.roots.push(new_root);
             self.normalize();
         }
@@ -482,7 +264,7 @@ impl AccumulatorTree {
         // find post-state proof including tombstoned leaf
         for r in self.roots.iter() {
             let mut path: Vec<(Hash, bool)> = Vec::new();
-            if let Some(_fid) = Self::node_select_proof_including_deleted(r, key, &mut path) {
+            if let Some(_fid) = r.select_proof_including_deleted(key, &mut path) {
                 let root_h = r.hash();
                 // after deletion the leaf's hash should be empty_hash()
                 let leaf_h = empty_hash();
@@ -513,21 +295,21 @@ impl AccumulatorTree {
 
     #[cfg(test)]
     pub fn test_merge_nodes(left: Box<Node>, right: Box<Node>) -> Box<Node> {
-        Self::node_merge(left, right, None)
+        Node::merge(left, right, None)
     }
 
     #[cfg(test)]
     pub fn test_delete_recursive(node: Box<Node>, key: &str) -> Box<Node> {
-        Self::node_delete_recursive(node, key)
+        node.delete(key)
     }
 
     #[cfg(test)]
     pub fn test_update_recursive(node: &mut Node, key: &str, fid: &str) -> bool {
-        Self::node_update_recursive(node, key, fid)
+        node.update(key, fid)
     }
 
     #[cfg(test)]
     pub fn test_revive_recursive(node: Box<Node>, key: &str, fid: &str) -> Box<Node> {
-        Self::node_revive_recursive(node, key, fid)
+        node.revive(key, fid)
     }
 }
