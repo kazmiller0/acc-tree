@@ -131,23 +131,6 @@ impl DynamicAccumulator {
         current_acc.mul(exponent_product).into_affine()
     }
 
-    /// Compute union of two accumulators incrementally using the trapdoor.
-    /// Identifies elements in set2 missing from set1, and multiplies acc1 by (s - e) for each.
-    pub fn incremental_union(
-        acc1: G1Affine,
-        _acc2: G1Affine,
-        set1: &[Fr],
-        set2: &[Fr],
-    ) -> G1Affine {
-        let new_elements: Vec<Fr> = set2.iter().filter(|e| !set1.contains(e)).copied().collect();
-
-        if new_elements.is_empty() {
-            acc1
-        } else {
-            Self::incremental_add_elements(acc1, &new_elements)
-        }
-    }
-
     // ==========================================
     // 2. Query
     // ==========================================

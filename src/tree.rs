@@ -166,28 +166,10 @@ impl AccumulatorTree {
                     })
                 }
             }
-            Node::NonLeaf {
-                level, left, right, ..
-            } => {
+            Node::NonLeaf { left, right, level, .. } => {
                 let l = Self::node_delete_recursive(left, target_key);
                 let r = Self::node_delete_recursive(right, target_key);
-                let new_keys = Rc::new(l.keys().union(&r.keys()));
-
-                // Optimize: Only convert the difference (right - left) to Vec<Fr>
-                // This avoids O(n*m) comparison in incremental_union
-                let diff_elements = r.keys().difference(&l.keys());
-                let diff_fr = digest_set_from_set(&diff_elements);
-                let new_acc = DynamicAccumulator::incremental_add_elements(l.acc(), &diff_fr);
-
-                let new_hash = nonleaf_hash(l.hash(), r.hash());
-                Box::new(Node::NonLeaf {
-                    hash: new_hash,
-                    keys: new_keys,
-                    acc: new_acc,
-                    level,
-                    left: l,
-                    right: r,
-                })
+                Self::node_merge(l, r, Some(level))
             }
         }
     }
@@ -217,34 +199,17 @@ impl AccumulatorTree {
                     })
                 }
             }
-            Node::NonLeaf {
-                level, left, right, ..
-            } => {
+            Node::NonLeaf { left, right, level, .. } => {
                 let l = Self::node_revive_recursive(left, target_key, new_fid);
                 let r = Self::node_revive_recursive(right, target_key, new_fid);
-                let new_keys = Rc::new(l.keys().union(&r.keys()));
-
-                // Optimize: Only convert the difference (right - left) to Vec<Fr>
-                // This avoids O(n*m) comparison in incremental_union
-                let diff_elements = r.keys().difference(&l.keys());
-                let diff_fr = digest_set_from_set(&diff_elements);
-                let new_acc = DynamicAccumulator::incremental_add_elements(l.acc(), &diff_fr);
-
-                let new_hash = nonleaf_hash(l.hash(), r.hash());
-                Box::new(Node::NonLeaf {
-                    hash: new_hash,
-                    keys: new_keys,
-                    acc: new_acc,
-                    level,
-                    left: l,
-                    right: r,
-                })
+                Self::node_merge(l, r, Some(level))
             }
         }
     }
 
     /// Merge two nodes into a new NonLeaf node
-    fn node_merge(left: Box<Node>, right: Box<Node>) -> Box<Node> {
+    /// If level is provided, use it; otherwise compute as right.level() + 1
+    fn node_merge(left: Box<Node>, right: Box<Node>, level: Option<usize>) -> Box<Node> {
         let new_keys = Rc::new(left.keys().union(&right.keys()));
 
         let left_acc = left.acc();
@@ -261,7 +226,7 @@ impl AccumulatorTree {
             hash: nonleaf_hash(left.hash(), right.hash()),
             keys: new_keys,
             acc: new_acc,
-            level: right.level() + 1,
+            level: level.unwrap_or_else(|| right.level() + 1),
             left,
             right,
         })
@@ -281,7 +246,7 @@ impl AccumulatorTree {
             while let Some(top) = stack.last() {
                 if top.level() == cur.level() {
                     let left = stack.pop().unwrap();
-                    cur = Self::node_merge(left, cur);
+                    cur = Self::node_merge(left, cur, None);
                 } else {
                     break;
                 }
@@ -546,7 +511,7 @@ impl AccumulatorTree {
 
     #[cfg(test)]
     pub fn test_merge_nodes(left: Box<Node>, right: Box<Node>) -> Box<Node> {
-        Self::node_merge(left, right)
+        Self::node_merge(left, right, None)
     }
 
     #[cfg(test)]
