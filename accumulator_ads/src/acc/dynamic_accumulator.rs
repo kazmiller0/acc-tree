@@ -2,8 +2,9 @@
 //! intersection, union, and disjointness proofs.
 //!
 //! # Trapdoor Note
-//! This implementation assumes the entity has access to the secret trapdoor `PRI_S`.
-//! Operations like add, delete, and update are performed in O(1) using the trapdoor.
+//! This implementation requires a secret trapdoor (private key) to perform operations.
+//! The trapdoor should be injected through the constructor for better testability
+//! and separation of concerns.
 
 use anyhow::{anyhow, ensure, Context, Result};
 use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Affine};
@@ -17,8 +18,6 @@ use std::ops::Neg;
 
 use super::proofs::{MembershipProof, NonMembershipProof};
 use crate::acc::utils::{expand_to_poly, poly_to_g1, poly_to_g2};
-// 假设 PRI_S 在生产构建中也是可见的，请确保该模块在正式编译中可用
-use super::setup::PRI_S;
 
 /// Represents the result of a query against the accumulator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,22 +33,52 @@ pub enum QueryResult {
 pub struct DynamicAccumulator {
     /// The current accumulator value, g1^P(s).
     pub acc_value: G1Affine,
+    /// The secret trapdoor used for O(1) operations.
+    /// Injected through constructor for better testability and modularity.
+    trapdoor: Fr,
 }
 
 impl Default for DynamicAccumulator {
     fn default() -> Self {
-        Self::new()
+        // Use the default trapdoor from setup for backward compatibility
+        Self::new(super::setup::PRI_S.clone())
     }
 }
 
 impl DynamicAccumulator {
-    /// Creates a new, empty dynamic accumulator.
-    pub fn new() -> Self {
+    /// Creates a new, empty dynamic accumulator with the given trapdoor.
+    ///
+    /// # Arguments
+    /// * `trapdoor` - The secret key used for O(1) accumulator operations
+    ///
+    /// # Examples
+    /// ```
+    /// use accumulator_ads::DynamicAccumulator;
+    /// use ark_bls12_381::Fr;
+    /// use ark_ff::PrimeField;
+    ///
+    /// let trapdoor = Fr::from(12345u64);
+    /// let acc = DynamicAccumulator::new(trapdoor);
+    /// ```
+    pub fn new(trapdoor: Fr) -> Self {
         Self {
             acc_value: G1Projective::from(G1Affine::prime_subgroup_generator())
                 .mul(Fr::one().into_repr())
                 .into_affine(),
+            trapdoor,
         }
+    }
+
+    /// Returns the commitment value for an empty accumulator.
+    ///
+    /// This is a convenience method for upper layers to obtain the empty accumulator
+    /// commitment without needing to know the internal implementation details
+    /// (empty set -> digest -> commitment computation).
+    ///
+    /// # Returns
+    /// The G1 point representing the commitment of an empty set.
+    pub fn empty_commitment() -> G1Affine {
+        Self::calculate_commitment(&[])
     }
 
     /// Static method: Fast calculation of set commitment using MSM.
@@ -58,10 +87,15 @@ impl DynamicAccumulator {
         poly_to_g1(expand_to_poly(elements))
     }
 
-    /// Factory method: Initialize accumulator from field elements.
-    pub fn from_set(elements: &[Fr]) -> Self {
+    /// Factory method: Initialize accumulator from field elements with the given trapdoor.
+    ///
+    /// # Arguments
+    /// * `trapdoor` - The secret key used for O(1) accumulator operations
+    /// * `elements` - The initial set of elements to accumulate
+    pub fn from_set(trapdoor: Fr, elements: &[Fr]) -> Self {
         Self {
             acc_value: Self::calculate_commitment(elements),
+            trapdoor,
         }
     }
 
@@ -71,20 +105,68 @@ impl DynamicAccumulator {
     }
 
     // ==========================================
+    // Backward Compatibility Helpers
+    // ==========================================
+
+    /// Creates an accumulator using the default trapdoor from setup.
+    /// This method provides backward compatibility for existing code.
+    ///
+    /// # Note
+    /// For new code, prefer using `new(trapdoor)` with explicit trapdoor injection.
+    pub fn with_default_trapdoor() -> Self {
+        Self::new(super::setup::PRI_S.clone())
+    }
+
+    /// Creates an accumulator from an existing accumulator value using the default trapdoor.
+    /// This is useful when you have an accumulator value but need to perform operations on it.
+    ///
+    /// # Arguments
+    /// * `acc_value` - The existing accumulator value
+    ///
+    /// # Note
+    /// This method assumes the accumulator was created with the default trapdoor.
+    pub fn from_value(acc_value: G1Affine) -> Self {
+        Self {
+            acc_value,
+            trapdoor: super::setup::PRI_S.clone(),
+        }
+    }
+
+    /// Static helper: Incrementally adds elements to an accumulator value using the default trapdoor.
+    /// This method provides backward compatibility for existing code.
+    ///
+    /// # Arguments
+    /// * `current_acc` - The current accumulator value
+    /// * `new_elements` - The elements to add
+    ///
+    /// # Note
+    /// For new code, prefer using the instance method `incremental_add_elements`.
+    pub fn incremental_add_with_default_trapdoor(
+        current_acc: G1Affine,
+        new_elements: &[Fr],
+    ) -> G1Affine {
+        let temp_acc = Self {
+            acc_value: current_acc,
+            trapdoor: super::setup::PRI_S.clone(),
+        };
+        temp_acc.incremental_add_elements(new_elements)
+    }
+
+    // ==========================================
     // 1. Add & Delete & Update (With Trapdoor s)
     // ==========================================
 
     /// Computes the new accumulator value after adding an element using the trapdoor.
     /// acc' = acc^(s - element)
     pub fn compute_add(&self, element: Fr) -> G1Affine {
-        let s_minus_elem: Fr = *PRI_S - element;
+        let s_minus_elem: Fr = self.trapdoor - element;
         self.acc_value.mul(s_minus_elem).into_affine()
     }
 
     /// Computes the new accumulator value after deleting an element using the trapdoor.
     /// acc' = acc^(1 / (s - element))
     pub fn compute_delete(&self, element: Fr) -> Result<G1Affine> {
-        let s_minus_elem: Fr = *PRI_S - element;
+        let s_minus_elem: Fr = self.trapdoor - element;
         let inverse = s_minus_elem.inverse().ok_or_else(|| {
             anyhow!("Failed to compute inverse: element might be equal to s (Trapdoor collision)")
         })?;
@@ -99,7 +181,7 @@ impl DynamicAccumulator {
         let temp_acc = self.compute_delete(old_element)?;
 
         // Step 2: Add new (multiply by (s-new))
-        let s_minus_new: Fr = *PRI_S - new_element;
+        let s_minus_new: Fr = self.trapdoor - new_element;
         Ok(temp_acc.mul(s_minus_new).into_affine())
     }
 
@@ -116,19 +198,19 @@ impl DynamicAccumulator {
     ///
     /// Performance gain: Scalar field operations are orders of magnitude faster
     /// than elliptic curve point operations.
-    pub fn incremental_add_elements(current_acc: G1Affine, new_elements: &[Fr]) -> G1Affine {
+    pub fn incremental_add_elements(&self, new_elements: &[Fr]) -> G1Affine {
         if new_elements.is_empty() {
-            return current_acc;
+            return self.acc_value;
         }
 
         // Step 1: Compute the product of all (s - xᵢ) in the scalar field
         // This is much faster than repeated point multiplications
         let exponent_product = new_elements
             .iter()
-            .fold(Fr::one(), |acc, &elem| acc * (*PRI_S - elem));
+            .fold(Fr::one(), |acc, &elem| acc * (self.trapdoor - elem));
 
         // Step 2: Single point multiplication - only one expensive operation
-        current_acc.mul(exponent_product).into_affine()
+        self.acc_value.mul(exponent_product).into_affine()
     }
 
     // ==========================================

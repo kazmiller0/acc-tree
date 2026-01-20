@@ -1,4 +1,4 @@
-use accumulator_ads::{digest_set_from_set, DynamicAccumulator, G1Affine, Set};
+use accumulator_ads::{DynamicAccumulator, G1Affine};
 use lazy_static::lazy_static;
 use sha2::{Digest, Sha256};
 
@@ -6,10 +6,7 @@ pub type Hash = [u8; 32];
 
 lazy_static! {
     pub static ref EMPTY_HASH: Hash = leaf_hash("", "");
-    pub static ref EMPTY_ACC: G1Affine = {
-        let empty_set = digest_set_from_set(&Set::<String>::new());
-        DynamicAccumulator::calculate_commitment(&empty_set)
-    };
+    pub static ref EMPTY_ACC: G1Affine = DynamicAccumulator::empty_commitment();
 }
 
 pub fn empty_hash() -> Hash {
@@ -37,7 +34,7 @@ pub fn nonleaf_hash(left: Hash, right: Hash) -> Hash {
 }
 
 /// Unit tests for cryptographic hash functions
-/// 
+///
 /// These tests verify hash function properties: determinism, collision resistance, etc.
 #[cfg(test)]
 mod tests {
@@ -109,7 +106,7 @@ mod tests {
         use accumulator_ads::acc::setup::{PublicParameters, init_public_parameters_direct};
         use ark_bls12_381::Fr;
         use std::sync::Once;
-        
+
         static INIT: Once = Once::new();
         INIT.call_once(|| {
             let secret_s = Fr::from(123456789u128);

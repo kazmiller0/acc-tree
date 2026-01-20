@@ -312,7 +312,7 @@ impl Node {
         // Using HashSet.difference() is O(n), much faster than converting both full sets
         let diff_elements = right.keys().difference(&left.keys());
         let diff_fr = digest_set_from_set(&diff_elements);
-        let new_acc = DynamicAccumulator::incremental_add_elements(left_acc, &diff_fr);
+        let new_acc = DynamicAccumulator::incremental_add_with_default_trapdoor(left_acc, &diff_fr);
 
         Box::new(Node::NonLeaf {
             hash: nonleaf_hash(left.hash(), right.hash()),

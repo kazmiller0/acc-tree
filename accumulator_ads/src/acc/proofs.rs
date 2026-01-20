@@ -266,7 +266,8 @@ impl IntersectionProof {
         intersection_set: &[Fr],
     ) -> Result<(DynamicAccumulator, Self)> {
         // 1. Create the intersection accumulator
-        let intersection_acc = DynamicAccumulator::from_set(intersection_set);
+        let trapdoor = super::setup::PRI_S.clone();
+        let intersection_acc = DynamicAccumulator::from_set(trapdoor, intersection_set);
 
         // 2. Compute witnesses using DynamicAccumulator logic
         let (witness_a, witness_b, witness_coprime_a, witness_coprime_b) =
@@ -321,7 +322,8 @@ impl UnionProof {
         union_set: &[Fr],
     ) -> Result<(DynamicAccumulator, Self)> {
         // Reconstruct union accumulator
-        let union_acc = DynamicAccumulator::from_set(union_set);
+        let trapdoor = super::setup::PRI_S.clone();
+        let union_acc = DynamicAccumulator::from_set(trapdoor, union_set);
 
         let union_proof = Self {
             intersection_acc_value: intersection_acc.acc_value,
@@ -395,7 +397,8 @@ mod tests {
         // Create an initial set with some elements
         let initial_set = Set::from_vec(vec![1u64, 2, 3, 4, 5]);
         let digest_set = digest_set_from_set(&initial_set);
-        let mut acc = DynamicAccumulator::from_set(&digest_set);
+        let trapdoor = crate::acc::setup::PRI_S.clone();
+        let mut acc = DynamicAccumulator::from_set(trapdoor, &digest_set);
         let initial_acc_value = acc.acc_value;
 
         // Create old and new elements
@@ -421,9 +424,10 @@ mod tests {
         // Create an initial set
         let initial_set = Set::from_vec(vec![10u64, 20, 30]);
         let digest_set = digest_set_from_set(&initial_set);
+        let trapdoor = crate::acc::setup::PRI_S.clone();
 
-        let mut acc1 = DynamicAccumulator::from_set(&digest_set);
-        let mut acc2 = DynamicAccumulator::from_set(&digest_set);
+        let mut acc1 = DynamicAccumulator::from_set(trapdoor.clone(), &digest_set);
+        let mut acc2 = DynamicAccumulator::from_set(trapdoor, &digest_set);
 
         let old_element = Fr::from(20u64);
         let new_element = Fr::from(25u64);

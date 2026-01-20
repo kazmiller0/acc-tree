@@ -156,7 +156,7 @@ impl AccumulatorTree {
                 let key_set = accumulator_ads::Set::from_vec(vec![key.to_string()]);
                 let key_digest_set = accumulator_ads::digest_set_from_set(&key_set);
                 let key_elem = *key_digest_set.iter().next().unwrap();
-                let acc_inst = accumulator_ads::DynamicAccumulator { acc_value: acc_val };
+                let acc_inst = accumulator_ads::DynamicAccumulator::from_value(acc_val);
                 let acc_witness = acc_inst
                     .compute_membership_witness(key_elem)
                     .unwrap_or(acc_val);

@@ -32,7 +32,7 @@ mod tests {
     #[test]
     fn test_add_delete_flow() {
         init_logger();
-        let mut acc = DynamicAccumulator::new();
+        let mut acc = DynamicAccumulator::default();
 
         // Create a test element
         let set_elem = Set::from_vec(vec![42]);
