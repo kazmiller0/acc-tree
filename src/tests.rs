@@ -1,5 +1,5 @@
 use super::*;
-use accumulator_ads::{DynamicAccumulator, DigestSet, Set};
+use accumulator_ads::{DigestSet, DynamicAccumulator, Set};
 use std::sync::Once;
 
 static INIT: Once = Once::new();
@@ -8,17 +8,16 @@ static INIT: Once = Once::new();
 /// This must be called before running any tests that use the accumulator
 fn init_test_params() {
     INIT.call_once(|| {
-        use accumulator_ads::acc::setup::{init_public_parameters_direct, PublicParameters};
+        use accumulator_ads::acc::setup::{PublicParameters, init_public_parameters_direct};
         use ark_bls12_381::Fr;
-        
+
         // Generate test parameters with sufficient degree for all tests
         // test_bulk_kv_operations_large uses 500 elements, so we need at least degree 500
         let secret_s = Fr::from(259535143263514268207918833918737523409u128);
         let params = PublicParameters::generate_for_testing(secret_s, 600);
-        
+
         // Initialize global parameters
-        init_public_parameters_direct(params)
-            .expect("Failed to initialize test parameters");
+        init_public_parameters_direct(params).expect("Failed to initialize test parameters");
     });
 }
 
@@ -30,33 +29,37 @@ fn cal_acc_g1(keys: &Set<String>) -> accumulator_ads::G1Affine {
 
 // Helper function to verify membership
 // SECURITY FIX: Uses only public parameters for verification
-fn verify_membership(acc_val: &accumulator_ads::G1Affine, witness: &accumulator_ads::G1Affine, key: &String) -> bool {
+fn verify_membership(
+    acc_val: &accumulator_ads::G1Affine,
+    witness: &accumulator_ads::G1Affine,
+    key: &String,
+) -> bool {
     init_test_params();
     use accumulator_ads::Fr;
     use accumulator_ads::acc::setup::get_g2s;
-    use accumulator_ads::digest::Digestible;
     use accumulator_ads::acc::utils::digest_to_prime_field;
+    use accumulator_ads::digest::Digestible;
     use ark_bls12_381::{Bls12_381 as Curve, G2Affine};
-    use ark_ec::{PairingEngine, AffineCurve, ProjectiveCurve};
+    use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
     use std::ops::Neg;
-    
+
     // Get the Fr element for the key
     let key_digest = key.to_digest();
     let key_fr: Fr = digest_to_prime_field(&key_digest);
-    
+
     let g2 = G2Affine::prime_subgroup_generator();
     let g2_s = get_g2s(1_usize); // g2^s from public parameters
-    
+
     // Compute g2^(-element)
     let g2_neg_elem = g2.mul(key_fr.neg()).into_affine();
-    
+
     // Compute g2^(s-element) = g2^s * g2^{-element}
     let g2_s_minus_elem = (g2_s.into_projective() + g2_neg_elem.into_projective()).into_affine();
-    
+
     // Verify: e(witness, g2^(s-element)) == e(acc, g2)
     let lhs = Curve::pairing(*witness, g2_s_minus_elem);
     let rhs = Curve::pairing(*acc_val, g2);
-    
+
     lhs == rhs
 }
 
@@ -838,11 +841,7 @@ fn test_select_with_proof_verifies() {
     let acc_val = qr.accumulator.expect("acc must be present");
     let witness = qr.membership_witness.expect("witness must be present");
     // verify accumulator membership witness
-    assert!(verify_membership(
-        &acc_val,
-        &witness,
-        &"P".to_string()
-    ));
+    assert!(verify_membership(&acc_val, &witness, &"P".to_string()));
 
     // combined verification convenience
     assert!(qr.verify_full("P", "PV"));
@@ -905,7 +904,9 @@ fn test_delete_with_proof() {
 }
 
 #[test]
-fn test_select_with_nonmembership_when_absent() {    init_test_params();    let tree = AccumulatorTree::new();
+fn test_select_with_nonmembership_when_absent() {
+    init_test_params();
+    let tree = AccumulatorTree::new();
     // empty tree: key absent
     let qr = tree.select_with_proof("Z");
     assert_eq!(qr.fid, None);

@@ -96,11 +96,14 @@ impl AccumulatorTree {
                 }
             }
             Node::NonLeaf { left, right, .. } => {
-                if let Some(fid) = Self::node_select_proof_including_deleted(left, target_key, path) {
+                if let Some(fid) = Self::node_select_proof_including_deleted(left, target_key, path)
+                {
                     path.push((right.hash(), false));
                     return Some(fid);
                 }
-                if let Some(fid) = Self::node_select_proof_including_deleted(right, target_key, path) {
+                if let Some(fid) =
+                    Self::node_select_proof_including_deleted(right, target_key, path)
+                {
                     path.push((left.hash(), true));
                     return Some(fid);
                 }
@@ -123,10 +126,7 @@ impl AccumulatorTree {
                 }
             }
             Node::NonLeaf {
-                hash,
-                left,
-                right,
-                ..
+                hash, left, right, ..
             } => {
                 let changed = if left.has_key(target_key) {
                     Self::node_update_recursive(left, target_key, new_fid)
@@ -318,7 +318,11 @@ impl AccumulatorTree {
     /// Insert with proof: returns pre-insert snapshot and post-insert proofs.
     /// Note: strong non-membership proofs are not implemented; we provide a pre-insert
     /// snapshot (`pre_roots`) that a verifier can use with application-level checks.
-    pub fn insert_with_proof(&mut self, key: String, fid: String) -> crate::response::InsertResponse {
+    pub fn insert_with_proof(
+        &mut self,
+        key: String,
+        fid: String,
+    ) -> crate::response::InsertResponse {
         // capture pre-insert snapshot (root hash + acc) for all roots
         let pre_roots: Vec<(Hash, accumulator_ads::G1Affine)> =
             self.roots.iter().map(|r| (r.hash(), r.acc())).collect();
@@ -353,7 +357,10 @@ impl AccumulatorTree {
     /// Generate a cryptographically sound non-membership proof
     /// This uses the accumulator's Bézout coefficient approach to prove
     /// that a key is NOT in the accumulated set
-    pub fn select_nonmembership_proof(&self, key: &str) -> Option<crate::response::NonMembershipProof> {
+    pub fn select_nonmembership_proof(
+        &self,
+        key: &str,
+    ) -> Option<crate::response::NonMembershipProof> {
         // First check if key exists anywhere
         for root in &self.roots {
             if root.has_key(key) {
@@ -491,7 +498,10 @@ impl AccumulatorTree {
     /// Delete with proof: returns a `DeleteResponse` capturing pre/post proofs
     /// so a verifier can confirm the key was tombstoned and the tree integrity
     /// (path siblings) was preserved.
-    pub fn delete_with_proof(&mut self, key: &str) -> Result<crate::response::DeleteResponse, String> {
+    pub fn delete_with_proof(
+        &mut self,
+        key: &str,
+    ) -> Result<crate::response::DeleteResponse, String> {
         // capture pre-state proof (must exist)
         let pre_qr = self.select_with_proof(key);
         let old_fid = pre_qr.fid.clone();

@@ -109,14 +109,27 @@ impl DynamicAccumulator {
     // ==========================================
 
     /// Incrementally update accumulator by adding multiple elements using the trapdoor.
-    /// Time complexity: O(k) where k is the number of new elements.
+    /// Time complexity: O(k) scalar multiplications + O(1) point multiplication.
+    ///
+    /// Optimized implementation: Instead of doing k point multiplications,
+    /// we compute the product of all scalars (s-x₁)(s-x₂)...(s-xₖ) first,
+    /// then perform a single point multiplication: Acc^(∏(s-xᵢ))
+    ///
+    /// Performance gain: Scalar field operations are orders of magnitude faster
+    /// than elliptic curve point operations.
     pub fn incremental_add_elements(current_acc: G1Affine, new_elements: &[Fr]) -> G1Affine {
-        let mut result = current_acc.into_projective();
-        for elem in new_elements {
-            let s_minus_elem = *PRI_S - elem;
-            result = result.mul(s_minus_elem.into_repr());
+        if new_elements.is_empty() {
+            return current_acc;
         }
-        result.into_affine()
+
+        // Step 1: Compute the product of all (s - xᵢ) in the scalar field
+        // This is much faster than repeated point multiplications
+        let exponent_product = new_elements
+            .iter()
+            .fold(Fr::one(), |acc, &elem| acc * (*PRI_S - elem));
+
+        // Step 2: Single point multiplication - only one expensive operation
+        current_acc.mul(exponent_product).into_affine()
     }
 
     /// Compute union of two accumulators incrementally using the trapdoor.
