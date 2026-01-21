@@ -82,10 +82,6 @@ impl AccumulatorTree {
         key: String,
         fid: String,
     ) -> crate::response::InsertResponse {
-        // capture pre-insert snapshot (root hash + acc) for all roots
-        let pre_roots: Vec<(Hash, accumulator_ads::G1Affine)> =
-            self.roots.iter().map(|r| (r.hash(), r.acc())).collect();
-
         // capture pre-insert non-membership proof (if any)
         let pre_nonmembership = self.select_nonmembership_proof(&key);
 
@@ -94,20 +90,23 @@ impl AccumulatorTree {
 
         // build post-insert proof for the inserted key
         let qr = self.select_with_proof(&key);
-        let post_root_hash = qr.root_hash;
         let post_acc = qr.accumulator;
-        let post_proof = qr.proof;
-        let post_acc_witness = qr.membership_witness;
+        let post_proof = qr.merkle_proof;
+        let post_acc_witness = match qr.acc_proof {
+            Some(crate::acc_proof::AccProof::Membership(mp)) => Some(mp.witness),
+            _ => None,
+        };
         let post_fids = qr.fids.unwrap_or_else(|| Set::new());
+
+        let post_acc_proof =
+            post_acc_witness.map(|w| crate::acc_proof::MembershipProof { witness: w });
 
         crate::response::InsertResponse::new(
             key,
             post_fids,
-            pre_roots,
-            post_root_hash,
             post_acc,
             post_proof,
-            post_acc_witness,
+            post_acc_proof,
             pre_nonmembership,
         )
     }
@@ -120,7 +119,7 @@ impl AccumulatorTree {
     pub fn select_nonmembership_proof(
         &self,
         key: &str,
-    ) -> Option<crate::response::NonMembershipProof> {
+    ) -> Option<crate::acc_proof::NonMembershipProof> {
         // First check if key exists anywhere
         for root in &self.roots {
             if root.has_key(key) {
@@ -145,7 +144,7 @@ impl AccumulatorTree {
         };
 
         // Generate non-membership proof using accumulator's Bézout approach
-        crate::response::NonMembershipProof::new(key.to_string(), global_acc, &all_keys)
+        crate::acc_proof::NonMembershipProof::new(key.to_string(), global_acc, &all_keys)
     }
 
     pub fn select(&self, key: &str) -> Option<Set<String>> {
@@ -165,7 +164,7 @@ impl AccumulatorTree {
             if let Some(fids) = r.recurse_select_with_proof(key, &mut path) {
                 let leaf_h = leaf_hash_fids(key, &fids);
                 let root_h = r.hash();
-                let proof = crate::proof::Proof::new(root_h, leaf_h, path);
+                let proof = crate::merkle_proof::Proof::new(root_h, leaf_h, path);
                 // create accumulator membership witness for the key
                 let acc_val = r.acc();
                 let key_set = accumulator_ads::Set::from_vec(vec![key.to_string()]);
@@ -175,19 +174,25 @@ impl AccumulatorTree {
                 let acc_witness = acc_inst
                     .compute_membership_witness(key_elem)
                     .unwrap_or(acc_val);
+                let acc_proof =
+                    crate::acc_proof::AccProof::Membership(crate::acc_proof::MembershipProof {
+                        witness: acc_witness,
+                    });
                 return crate::response::QueryResponse::new(
                     Some(fids),
                     Some(proof),
-                    Some(root_h),
-                    Some(acc_val),
-                    Some(acc_witness),
-                    None,
+                    Some(r.acc()),
+                    Some(acc_proof),
                 );
             }
         }
         // not found: try to construct non-membership proof
-        let nm = self.select_nonmembership_proof(key);
-        crate::response::QueryResponse::new(None, None, None, None, None, nm)
+        if let Some(nm) = self.select_nonmembership_proof(key) {
+            let nm_proof = crate::acc_proof::AccProof::NonMembership(nm);
+            crate::response::QueryResponse::new(None, None, None, Some(nm_proof))
+        } else {
+            crate::response::QueryResponse::new(None, None, None, None)
+        }
     }
 
     /// Update a specific FID: replace old_fid with new_fid in the key's FID set.
@@ -223,9 +228,11 @@ impl AccumulatorTree {
         }
         // capture pre acc/root
         let pre_acc = pre_qr.accumulator;
-        let pre_acc_witness = pre_qr.membership_witness;
-        let pre_root_hash = pre_qr.root_hash;
-        let pre_proof = pre_qr.proof;
+        let pre_acc_witness = match pre_qr.acc_proof {
+            Some(crate::acc_proof::AccProof::Membership(mp)) => Some(mp.witness),
+            _ => None,
+        };
+        let pre_proof = pre_qr.merkle_proof;
 
         // perform the update
         if !self.update(key, old_fid, new_fid.clone()) {
@@ -233,17 +240,19 @@ impl AccumulatorTree {
         }
 
         // obtain post-update proof
-        let post_qr = self.select_with_proof(key);
-        if post_qr.fids.is_none() {
+        let post_qs = self.select_with_proof(key);
+        if post_qs.fids.is_none() {
             return Err("post-update: key missing after update".to_string());
         }
-        let new_fids = post_qr.fids.clone().unwrap();
-        let post_proof = post_qr.proof.expect("post proof present");
-        let post_acc = post_qr.accumulator.expect("post acc present");
-        let post_acc_witness = post_qr
-            .membership_witness
-            .expect("post acc witness present");
-        let post_root_hash = post_qr.root_hash.expect("post root hash present");
+        let new_fids = post_qs.fids.clone().unwrap();
+        let post_proof = post_qs.merkle_proof.expect("post proof present");
+        let post_acc = post_qs.accumulator.expect("post acc present");
+        let post_acc_proof = match post_qs.acc_proof {
+            Some(crate::acc_proof::AccProof::Membership(mp)) => mp,
+            _ => panic!("post acc witness present"),
+        };
+        let pre_acc_proof =
+            pre_acc_witness.map(|w| crate::acc_proof::MembershipProof { witness: w });
 
         Ok(crate::response::UpdateResponse::new(
             key.to_string(),
@@ -253,12 +262,10 @@ impl AccumulatorTree {
             new_fids,
             pre_proof,
             pre_acc,
-            pre_acc_witness,
+            pre_acc_proof,
             post_proof,
             post_acc,
-            post_acc_witness,
-            pre_root_hash,
-            post_root_hash,
+            post_acc_proof,
         ))
     }
 
@@ -291,10 +298,12 @@ impl AccumulatorTree {
                 fid, key
             ));
         }
-        let pre_proof = pre_qr.proof;
+        let pre_proof = pre_qr.merkle_proof;
         let pre_acc = pre_qr.accumulator;
-        let pre_acc_witness = pre_qr.membership_witness;
-        let pre_root_hash = pre_qr.root_hash;
+        let pre_acc_proof = match pre_qr.acc_proof {
+            Some(crate::acc_proof::AccProof::Membership(mp)) => Some(mp),
+            _ => None,
+        };
 
         // perform deletion
         self.delete(key, fid);
@@ -312,9 +321,8 @@ impl AccumulatorTree {
                     // Still has FIDs remaining
                     leaf_hash_fids(key, &post_fids)
                 };
-                let post_proof = crate::proof::Proof::new(root_h, leaf_h, path);
+                let post_proof = crate::merkle_proof::Proof::new(root_h, leaf_h, path);
                 let post_acc = r.acc();
-                let post_root_hash = root_h;
                 return Ok(crate::response::DeleteResponse::new(
                     key.to_string(),
                     fid.to_string(), // deleted_fid
@@ -322,11 +330,9 @@ impl AccumulatorTree {
                     post_fids,       // new_fids
                     pre_proof,
                     pre_acc,
-                    pre_acc_witness,
+                    pre_acc_proof,
                     post_proof,
                     post_acc,
-                    pre_root_hash,
-                    post_root_hash,
                 ));
             }
         }
