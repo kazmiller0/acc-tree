@@ -1,7 +1,7 @@
 use accumulator_ads::{DynamicAccumulator, G1Affine, Set, digest_set_from_set};
 use std::rc::Rc;
 
-use crate::crypto::{Hash, empty_acc, empty_hash, leaf_hash_fids, nonleaf_hash};
+use crate::utils::{Hash, empty_acc, nonleaf_hash};
 
 #[derive(Debug, Clone)]
 pub enum Node {
@@ -32,14 +32,9 @@ impl Node {
     pub fn hash(&self) -> Hash {
         match self {
             Node::Leaf {
-                key, fids, deleted, ..
+                key, fids, level, deleted,
             } => {
-                if *deleted {
-                    // tombstoned leaf contributes an empty hash
-                    empty_hash()
-                } else {
-                    leaf_hash_fids(key, fids)
-                }
+                crate::utils::leaf_hash(key, fids, *level, *deleted)
             }
             Node::NonLeaf { hash, .. } => *hash,
         }
@@ -414,7 +409,12 @@ mod tests {
 
         assert!(!deleted_leaf.has_key("deleted"));
         assert_eq!(deleted_leaf.keys().len(), 0);
-        assert_eq!(deleted_leaf.hash(), empty_hash());
+        // Hash should NOT be empty_hash() anymore, but a specific hash for the tombstoned state
+        assert_ne!(deleted_leaf.hash(), crate::utils::empty_hash());
+        assert_eq!(
+            deleted_leaf.hash(),
+            crate::utils::leaf_hash("deleted", &Set::from_vec(vec!["fid1".into()]), 0, true)
+        );
         assert_eq!(deleted_leaf.acc(), empty_acc());
     }
 

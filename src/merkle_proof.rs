@@ -1,4 +1,4 @@
-use crate::{Hash, leaf_hash_fids, nonleaf_hash};
+use crate::{Hash, nonleaf_hash};
 use accumulator_ads::Set;
 
 #[derive(Debug, Clone)]
@@ -35,9 +35,15 @@ impl Proof {
     }
 
     /// Convenience: recompute the leaf hash from `key`/`fids` and verify this proof.
+    /// Assumes level=0 and deleted=false (standard existence check).
     /// Returns false if the recomputed leaf hash does not match `self.leaf_hash`.
     pub fn verify_with_kv(&self, key: &str, fids: &Set<String>) -> bool {
-        let leaf = leaf_hash_fids(key, fids);
+        self.verify_leaf_state(key, fids, 0, false)
+    }
+
+    /// Verify the proof against a specific leaf state (including level and deletion status).
+    pub fn verify_leaf_state(&self, key: &str, fids: &Set<String>, level: usize, deleted: bool) -> bool {
+        let leaf = crate::utils::leaf_hash(key, fids, level, deleted);
         if leaf != self.leaf_hash {
             return false;
         }
@@ -49,16 +55,17 @@ impl Proof {
 /// 
 /// These tests verify the correctness of proof construction and verification logic.
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{leaf_hash_fids, nonleaf_hash};
+    use crate::utils::{leaf_hash, nonleaf_hash};
 
     #[test]
     fn test_proof_verify_single_leaf() {
         // Single leaf: proof path is empty
         let key = "test_key";
         let fids = Set::from_vec(vec!["test_fid".to_string()]);
-        let leaf = leaf_hash_fids(key, &fids);
+        let leaf = leaf_hash(key, &fids, 0, false);
         
         let proof = Proof::new(leaf, leaf, vec![]);
         
@@ -74,8 +81,8 @@ mod tests {
         let key_b = "B";
         let fids_b = Set::from_vec(vec!["fb".to_string()]);
         
-        let leaf_a = leaf_hash_fids(key_a, &fids_a);
-        let leaf_b = leaf_hash_fids(key_b, &fids_b);
+        let leaf_a = leaf_hash(key_a, &fids_a, 0, false);
+        let leaf_b = leaf_hash(key_b, &fids_b, 0, false);
         let root = nonleaf_hash(leaf_a, leaf_b);
         
         // Proof for A (B is right sibling)
@@ -92,10 +99,10 @@ mod tests {
     #[test]
     fn test_proof_verify_deep_tree() {
         // Tree: ((A, B), (C, D))
-        let leaf_a = leaf_hash_fids("A", &Set::from_vec(vec!["fa".to_string()]));
-        let leaf_b = leaf_hash_fids("B", &Set::from_vec(vec!["fb".to_string()]));
-        let leaf_c = leaf_hash_fids("C", &Set::from_vec(vec!["fc".to_string()]));
-        let leaf_d = leaf_hash_fids("D", &Set::from_vec(vec!["fd".to_string()]));
+        let leaf_a = leaf_hash("A", &Set::from_vec(vec!["fa".to_string()]), 0, false);
+        let leaf_b = leaf_hash("B", &Set::from_vec(vec!["fb".to_string()]), 0, false);
+        let leaf_c = leaf_hash("C", &Set::from_vec(vec!["fc".to_string()]), 0, false);
+        let leaf_d = leaf_hash("D", &Set::from_vec(vec!["fd".to_string()]), 0, false);
         
         let left_subtree = nonleaf_hash(leaf_a, leaf_b);
         let right_subtree = nonleaf_hash(leaf_c, leaf_d);
@@ -124,8 +131,8 @@ mod tests {
 
     #[test]
     fn test_proof_verify_fails_with_wrong_leaf() {
-        let leaf_a = leaf_hash_fids("A", &Set::from_vec(vec!["fa".to_string()]));
-        let leaf_b = leaf_hash_fids("B", &Set::from_vec(vec!["fb".to_string()]));
+        let leaf_a = leaf_hash("A", &Set::from_vec(vec!["fa".to_string()]), 0, false);
+        let leaf_b = leaf_hash("B", &Set::from_vec(vec!["fb".to_string()]), 0, false);
         let root = nonleaf_hash(leaf_a, leaf_b);
         
         // Create proof for A but try to verify with wrong key/fids
@@ -135,9 +142,9 @@ mod tests {
 
     #[test]
     fn test_proof_verify_fails_with_wrong_path() {
-        let leaf_a = leaf_hash_fids("A", &Set::from_vec(vec!["fa".to_string()]));
-        let leaf_b = leaf_hash_fids("B", &Set::from_vec(vec!["fb".to_string()]));
-        let leaf_c = leaf_hash_fids("C", &Set::from_vec(vec!["fc".to_string()]));
+        let leaf_a = leaf_hash("A", &Set::from_vec(vec!["fa".to_string()]), 0, false);
+        let leaf_b = leaf_hash("B", &Set::from_vec(vec!["fb".to_string()]), 0, false);
+        let leaf_c = leaf_hash("C", &Set::from_vec(vec!["fc".to_string()]), 0, false);
         let root = nonleaf_hash(leaf_a, leaf_b);
         
         // Use wrong sibling in path
@@ -147,9 +154,9 @@ mod tests {
 
     #[test]
     fn test_proof_verify_fails_with_wrong_root() {
-        let leaf_a = leaf_hash_fids("A", &Set::from_vec(vec!["fa".to_string()]));
-        let leaf_b = leaf_hash_fids("B", &Set::from_vec(vec!["fb".to_string()]));
-        let wrong_root = leaf_hash_fids("Wrong", &Set::from_vec(vec!["Root".to_string()]));
+        let leaf_a = leaf_hash("A", &Set::from_vec(vec!["fa".to_string()]), 0, false);
+        let leaf_b = leaf_hash("B", &Set::from_vec(vec!["fb".to_string()]), 0, false);
+        let wrong_root = leaf_hash("Wrong", &Set::from_vec(vec!["Root".to_string()]), 0, false);
         
         // Valid path but wrong root
         let proof = Proof::new(wrong_root, leaf_a, vec![(leaf_b, false)]);

@@ -1,4 +1,4 @@
-use crate::crypto::{Hash, empty_hash, leaf_hash_fids};
+use crate::utils::Hash;
 use crate::node::Node;
 use accumulator_ads::Set;
 
@@ -136,7 +136,7 @@ impl AccumulatorTree {
         // Calculate the global accumulator for all keys
         let global_acc = if all_keys.is_empty() {
             // Empty tree: use empty accumulator
-            crate::crypto::empty_acc()
+            crate::utils::empty_acc()
         } else {
             // Calculate accumulator commitment for all keys
             let digest_set = accumulator_ads::digest_set_from_set(&all_keys);
@@ -162,7 +162,7 @@ impl AccumulatorTree {
         for r in &self.roots {
             let mut path: Vec<(Hash, bool)> = Vec::new();
             if let Some(fids) = r.recurse_select_with_proof(key, &mut path) {
-                let leaf_h = leaf_hash_fids(key, &fids);
+                let leaf_h = crate::utils::leaf_hash(key, &fids, 0, false);
                 let root_h = r.hash();
                 let proof = crate::merkle_proof::Proof::new(root_h, leaf_h, path);
                 // create accumulator membership witness for the key
@@ -314,12 +314,14 @@ impl AccumulatorTree {
             if let Some(post_fids) = r.recurse_select_proof_including_deleted(key, &mut path) {
                 let root_h = r.hash();
                 // Calculate leaf hash based on whether it's now tombstoned
+                // Calculate leaf hash based on whether it's now tombstoned
                 let leaf_h = if post_fids.is_empty() {
                     // FID set is empty, leaf is tombstoned
-                    empty_hash()
+                    // Assuming leaves are at level 0
+                    crate::utils::leaf_hash(key, &post_fids, 0, true)
                 } else {
                     // Still has FIDs remaining
-                    leaf_hash_fids(key, &post_fids)
+                    crate::utils::leaf_hash(key, &post_fids, 0, false)
                 };
                 let post_proof = crate::merkle_proof::Proof::new(root_h, leaf_h, path);
                 let post_acc = r.acc();

@@ -390,7 +390,7 @@ impl DeleteResponse {
         // Verify post-proof matches the new FID set (or empty hash if tombstoned)
         if self.new_fids.is_empty() {
             // For tombstoned leaf, verify leaf hash is empty
-            use crate::crypto::empty_hash;
+            use crate::utils::empty_hash;
             if self.post_merkle_proof.leaf_hash != empty_hash() {
                 return false;
             }
@@ -434,7 +434,7 @@ impl DeleteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::leaf_hash_fids;
+    use crate::utils::leaf_hash;
     use accumulator_ads::digest_set_from_set;
     use std::sync::Once;
 
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn test_update_response_verify_fails_with_mismatched_paths() {
         init_test_params();
-        use crate::crypto::empty_hash;
+        use crate::utils::empty_hash;
 
         let old_fids = Set::from_vec(vec!["old".to_string()]);
         let new_fids = Set::from_vec(vec!["new".to_string()]);
@@ -491,14 +491,14 @@ mod tests {
 
         let pre_proof = MerkleProof::new(
             empty_hash(),
-            leaf_hash_fids("key", &old_fids),
+            leaf_hash("key", &old_fids, 0, false),
             vec![(empty_hash(), true)],
         );
 
         let post_proof = MerkleProof::new(
             empty_hash(),
-            leaf_hash_fids("key", &new_fids),
-            vec![(leaf_hash_fids("other", &other_fids), true)], // Different sibling
+            leaf_hash("key", &new_fids, 0, false),
+            vec![(leaf_hash("other", &other_fids, 0, false), true)], // Different sibling
         );
 
         let resp = UpdateResponse::new(
@@ -508,14 +508,14 @@ mod tests {
             Some(old_fids),
             new_fids,
             Some(pre_proof),
-            Some(crate::crypto::empty_acc()), // pre_acc
+            Some(crate::utils::empty_acc()), // pre_acc
             Some(MembershipProof {
-                witness: crate::crypto::empty_acc(),
+                witness: crate::utils::empty_acc(),
             }), // pre_acc_proof
             post_proof,
-            crate::crypto::empty_acc(),
+            crate::utils::empty_acc(),
             MembershipProof {
-                witness: crate::crypto::empty_acc(),
+                witness: crate::utils::empty_acc(),
             },
         );
 
@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn test_delete_response_construction() {
         init_test_params();
-        use crate::crypto::empty_hash;
+        use crate::utils::empty_hash;
 
         let post_proof = MerkleProof::new(empty_hash(), empty_hash(), vec![]);
         let old_fids = Set::from_vec(vec!["fid1".to_string()]);
@@ -540,7 +540,7 @@ mod tests {
             None,
             None,
             post_proof,
-            crate::crypto::empty_acc(),
+            crate::utils::empty_acc(),
         );
 
         assert_eq!(resp.key, "key1");
@@ -550,14 +550,14 @@ mod tests {
     #[test]
     fn test_delete_response_verify_post_proof() {
         init_test_params();
-        use crate::crypto::empty_hash;
+        use crate::utils::empty_hash;
         use accumulator_ads::{DynamicAccumulator, Set, digest_set_from_set};
 
         let old_fids = Set::from_vec(vec!["fid1".to_string()]);
         let new_fids = Set::new();
 
         // Create matching pre and post proofs with proper root hashes
-        let old_leaf = leaf_hash_fids("key1", &old_fids);
+        let old_leaf = leaf_hash("key1", &old_fids, 0, false);
         let pre_proof = MerkleProof::new(
             old_leaf, // root = leaf for single node
             old_leaf,
@@ -577,7 +577,7 @@ mod tests {
         // Witness for key1 in {key1} is the empty accumulator (g1)
         // because witness = g1 ^ product(s+x_j) for j != k; if set={k}, product is empty=1.
         let pre_witness = MembershipProof {
-            witness: crate::crypto::empty_acc(),
+            witness: crate::utils::empty_acc(),
         };
 
         let resp = DeleteResponse::new(
@@ -589,7 +589,7 @@ mod tests {
             Some(pre_acc),
             Some(pre_witness),
             post_proof,
-            crate::crypto::empty_acc(),
+            crate::utils::empty_acc(),
         );
 
         // Should pass basic verification
